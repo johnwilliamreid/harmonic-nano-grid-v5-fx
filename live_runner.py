@@ -181,9 +181,7 @@ def run_live_session(args):
                 bridge.send(f"🔴 <b>KILL SWITCH TRIGGERED</b> @ {current_price:.2f}")
                 break
 
-            time.sleep(0.5 if args.source == "ironbeam" else 2)
-            if args.source != "ironbeam":
-                break
+            time.sleep(0.5 if args.source == "ironbeam" else 1.0)
 
     finally:
         broker.cancel_all()
