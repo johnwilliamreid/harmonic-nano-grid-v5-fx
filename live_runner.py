@@ -31,14 +31,15 @@ def run_live_session(args):
     mult = MULTIPLIERS.get(args.instrument, 2.0)
     fee = COMMISSION_PER_RT.get(args.instrument, 1.94)
 
-    print("=" * 65)
+    print("=" * 70)
     print("🚀 HARMONIC NANO-GRID V4 EXECUTION RUNNER")
     print(f"Asset: {args.instrument} | Multiplier: ${mult}/pt | Fee: ${fee}/RT")
     print(f"Container: {args.low:.2f} - {args.high:.2f} (Δ {args.high - args.low:.2f} pts)")
     print(f"Source: {args.source.upper()} | Execution: {'🚨 LIVE REAL MONEY' if args.live_exec else '🛡️ PAPER DEMO (51428111)'}")
-    print(f"Timeframe: {args.tf} | Directional Breakers Configured: {'YES' if args.brk_low_front else 'GEOMETRIC DEFAULT'}")
-    print("=" * 65)
+    print(f"Timeframe: {args.tf} | Directional Breakers: {'YES' if args.brk_low_front else 'GEOMETRIC DEFAULT'}")
+    print("=" * 70)
 
+    # 1. Initialize Grid Geometry
     geom = HarmonicGridGeometry(
         range_low=args.low,
         range_high=args.high,
@@ -56,6 +57,7 @@ def run_live_session(args):
         brk_high_poc=args.brk_high_poc
     )
 
+    # 2. Compute Directional Bias
     bias_calc = DirectionalBiasCalculator(default_timeframe=args.tf)
     bias_data = bias_calc.compute_bias(
         range_low=args.low,
@@ -68,6 +70,7 @@ def run_live_session(args):
         timeframe=args.tf
     )
 
+    # 3. Build Telemetry Matrix List
     grid_list = []
     for idx in sorted(grid_dict.keys()):
         r = grid_dict[idx]
@@ -90,30 +93,13 @@ def run_live_session(args):
             "rr_ratio": r.get("rr_ratio", 0.0),
             "contracts": r.get("contracts", 0),
             "weight": r.get("weight", 0),
-            "status": "WORKING" if r["side"] != "MID" and r["cap"] > 0 else "EXIT_ONLY"
+            "boid": None,
+            "status": "ARMED" if r["side"] != "MID" and r["cap"] > 0 else "EXIT_ONLY"
         })
 
     start_dashboard_server(port=8080)
 
-    t_start = time.time()
-    tf_rule = TF_LIFECYCLE.get(args.tf, TF_LIFECYCLE["15m"])
-    max_duration = tf_rule["max_s"]
-    freeze_at = max_duration - tf_rule["freeze_buffer_s"]
-
-    p_eq = args.low + 0.5 * (args.high - args.low)
-    swing_amplitude = 0.38 * (args.high - args.low)  # Oscillate across L3 to L13
-
-    state = {
-        "status": "ACTIVE_QUOTING",
-        "paused": False,
-        "flatten": False,
-        "last_price": p_eq,
-        "position": 0,
-        "active_orders": 12,
-        "realized_pnl": 0.0,
-        "unrealized_pnl": 0.0
-    }
-
+    # 4. Connect Broker & Wire Instrument BEFORE WebSocket
     broker = None
     if args.source == "ironbeam":
         try:
@@ -122,41 +108,110 @@ def run_live_session(args):
             if not broker.authenticate():
                 print("[Runner] ❌ Ironbeam authentication failed!")
                 return
+            
+            # CRITICAL: set_instrument FIRST so data_symbol is configured
+            broker.set_instrument(args.instrument)
             broker.start_websocket()
             print(f"[Runner] ✅ Connected to {broker.exec_venue} (Account {broker.account_id})")
+
+            # Clean up any stale orders from prior test sessions
+            print("[Runner] 🧹 Cancelling prior working orders...")
+            broker.cancel_all()
+            time.sleep(1.0)
+
+            # Warm up price via REST snapshot if WS is still connecting
+            if hasattr(broker, "_ref_price"):
+                ref = broker._ref_price(args.instrument)
+                if ref and ref > 0:
+                    broker.last_price = ref
+                    print(f"[Runner] 🎯 Reference snapshot price: {ref:.2f}")
+
         except Exception as e:
             print(f"[Runner] ❌ Broker init error: {e}")
-    else:
-        print("[Runner] 📼 REPLAY SIMULATOR ACTIVE — generating continuous grid price oscillation.")
+            return
+
+    # 5. Dispatch Initial Resting Grid Orders
+    if broker and args.source == "ironbeam":
+        print("\n⚡ [Dispatch] Arming resting limit orders into Ironbeam...")
+        directive = bias_data.get("directive", "TWO_SIDED_BALANCED")
+        
+        for r in grid_list:
+            if r["cap"] == 0 or r["contracts"] == 0:
+                continue
+
+            # Check Directional Bias Directive Gates
+            if directive == "DISARM_SHORTS" and r["side"] == "SHORT":
+                r["status"] = "DISARMED_BIAS"
+                continue
+            if directive == "DISARM_LONGS" and r["side"] == "LONG":
+                r["status"] = "DISARMED_BIAS"
+                continue
+
+            oid = f"GRID_{args.instrument}_L{r['index']}_{int(time.time())}"
+            try:
+                boid = broker.place_limit_order(
+                    oid=oid,
+                    side=r["side"],
+                    price=r["price"],
+                    size=r["contracts"],
+                    instrument=args.instrument,
+                    tif="GTC"
+                )
+                if boid:
+                    r["boid"] = boid
+                    r["status"] = "WORKING"
+                else:
+                    r["status"] = "REJECTED"
+            except Exception as e:
+                print(f"[Runner] ❌ Failed to dispatch L{r['index']}: {e}")
+                r["status"] = "ERROR"
+
+    t_start = time.time()
+    tf_rule = TF_LIFECYCLE.get(args.tf, TF_LIFECYCLE["15m"])
+    max_duration = tf_rule["max_s"]
+    freeze_at = max_duration - tf_rule["freeze_buffer_s"]
+    p_eq = args.low + 0.5 * (args.high - args.low)
+
+    state = {
+        "status": "ACTIVE_QUOTING",
+        "paused": False,
+        "flatten": False,
+        "last_price": p_eq,
+        "position": 0,
+        "active_orders": 0,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0
+    }
 
     print("\n🟢 Engine running — press Ctrl+C to stop.")
     try:
-        step_counter = 0
         while not state["flatten"]:
             elapsed = time.time() - t_start
             rem_freeze = max(0, freeze_at - elapsed)
             rem_flatten = max(0, max_duration - elapsed)
 
+            # Lifecycle transitions
             if elapsed >= max_duration:
-                print(f"\n⏰ [T_flatten] Lifespan ({max_duration}s) reached! Flattening...")
+                print(f"\n⏰ [T_flatten] Session lifespan reached! Flattening all positions...")
                 state["status"] = "FLATTENED"
                 state["flatten"] = True
+                if broker and hasattr(broker, "flatten_position"):
+                    broker.flatten_position(args.instrument)
+                if broker and hasattr(broker, "cancel_all"):
+                    broker.cancel_all()
             elif elapsed >= freeze_at and state["status"] == "ACTIVE_QUOTING":
-                print(f"\n❄️ [T_freeze] Entering HARVEST_ONLY mode...")
+                print(f"\n❄️ [T_freeze] Entering HARVEST_ONLY mode (canceling entry quotes)...")
                 state["status"] = "HARVEST_ONLY_FREEZE"
+                if broker and hasattr(broker, "cancel_all"):
+                    broker.cancel_all()
 
-            # Price Feed Logic
+            # Read Real Broker State
             if broker:
-                state["last_price"] = broker.latest_price if hasattr(broker, "latest_price") else 0.0
-                state["active_orders"] = len(broker.active_orders) if hasattr(broker, "active_orders") else 0
-                state["position"] = broker.positions.get(args.instrument, 0) if hasattr(broker, "positions") else 0
-            else:
-                # Replay Price Sweep: Smooth sinusoidal trajectory across harmonic rungs
-                sim_offset = math.sin(step_counter * 0.12) * swing_amplitude
-                raw_sim_price = p_eq + sim_offset
-                state["last_price"] = round(round(raw_sim_price / 0.25) * 0.25, 2)
-                step_counter += 1
+                state["last_price"] = getattr(broker, "last_price", 0.0)
+                state["active_orders"] = len(broker.active) if hasattr(broker, "active") else 0
+                state["position"] = broker.get_position() if hasattr(broker, "get_position") else getattr(broker, "position", 0)
 
+            # Recompute Live Directional Bias with Chrono Decay
             live_brk_age = args.brk_age + elapsed
             bias_update = bias_calc.compute_bias(
                 range_low=args.low,
@@ -176,9 +231,10 @@ def run_live_session(args):
             bias_data["touches"] = args.brk_touches
             bias_data["k"] = bias_calc.TIMEFRAME_DECAY.get(args.tf, 0.00025)
 
+            # Stream Telemetry to Cockpit
             update_telemetry({
-                "venue": "REPLAY SIM" if args.source == "replay" else (getattr(broker, "exec_venue", "PAPER DEMO") if broker else "PAPER DEMO"),
-                "account": "SIM-REPLAY-01" if args.source == "replay" else (getattr(broker, "account_id", "51428111") if broker else "51428111"),
+                "venue": getattr(broker, "exec_venue", "PAPER DEMO") if broker else "PAPER DEMO",
+                "account": getattr(broker, "account_id", "51428111") if broker else "51428111",
                 "instrument": args.instrument,
                 "live_price": state["last_price"],
                 "position": state["position"],
@@ -204,22 +260,23 @@ def run_live_session(args):
                 "grid": grid_list
             })
 
-            time.sleep(0.5)
+            time.sleep(1.0)
 
     except KeyboardInterrupt:
-        print("\n[Runner] Terminating...")
+        print("\n[Runner] Graceful shutdown requested...")
     finally:
         if broker and hasattr(broker, "cancel_all"):
+            print("[Runner] Cancelling all active grid orders...")
             broker.cancel_all()
-        print("[Runner] Session ended.")
+        print("[Runner] Session cleanly stopped.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Harmonic Nano-Grid V4 Live Runner")
-    parser.add_argument("--source", type=str, default="replay", choices=["ironbeam", "replay"])
+    parser.add_argument("--source", type=str, default="ironbeam", choices=["ironbeam", "replay"])
     parser.add_argument("--instrument", type=str, default="MNQ")
     parser.add_argument("--low", type=float, required=True, help="Macro range low (L0)")
     parser.add_argument("--high", type=float, required=True, help="Macro range high (L16)")
-    parser.add_argument("--live-exec", action="store_true")
+    parser.add_argument("--live-exec", action="store_true", help="Send REAL-MONEY orders to Ironbeam (LIVE)")
     parser.add_argument("--tf", type=str, default="15m", choices=["15m", "5m", "1m", "15s", "5s", "1s"])
     parser.add_argument("--brk-low-front", type=float, default=None)
     parser.add_argument("--brk-low-back", type=float, default=None)
