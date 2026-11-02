@@ -1,3 +1,5 @@
+from dashboard import start_dashboard_server
+import json, os
 import sys
 import os
 import time
@@ -92,6 +94,7 @@ def run_live_session(args):
     )
 
     initial_px = getattr(broker, 'last_price', None) or (args.low + args.high) / 2.0
+    start_dashboard_server(8080)
     engine.deploy(initial_px)
 
     session_status = "COMPLETE"
@@ -104,6 +107,37 @@ def run_live_session(args):
 
             current_price = getattr(broker, 'last_price', None)
             price_age = time.time() - getattr(broker, 'last_price_time', 0) if hasattr(broker, 'last_price_time') else 0
+
+            # Dump live state for dashboard
+            try:
+                snap = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "instrument": args.instrument,
+                    "venue": getattr(broker, "exec_venue", "DEMO"),
+                    "account": getattr(broker, "account_id", "51428111"),
+                    "container_low": args.low,
+                    "container_high": args.high,
+                    "current_price": current_price,
+                    "regime": getattr(engine, "regime", "STRONG_BULLISH"),
+                    "open_contracts": engine.open_contracts_count() if hasattr(engine, "open_contracts_count") else 0,
+                    "active_risk": engine.active_risk() if hasattr(engine, "active_risk") else 0.0,
+                    "total_pnl": sum(r.get("pnl", 0.0) for r in engine.records),
+                    "tp_count": sum(1 for r in engine.records if r.get("type") == "TP"),
+                    "rungs": [
+                        {
+                            "price": getattr(r, "price", 0.0),
+                            "side": getattr(r, "side", "BUY"),
+                            "status": getattr(r, "status", "WORKING"),
+                            "order_id": str(getattr(r, "order_id", ""))
+                        } for r in getattr(engine, "rungs", [])
+                    ],
+                    "records": engine.records[-10:] if hasattr(engine, "records") else []
+                }
+                with open("state.json.tmp", "w") as sf:
+                    json.dump(snap, sf)
+                os.replace("state.json.tmp", "state.json")
+            except Exception:
+                pass
 
             if not current_price or price_age > 30:
                 if args.source == "ironbeam":
