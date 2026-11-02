@@ -98,8 +98,9 @@ class PreSessionReplay:
         if n_bars > 0:
             weights = [math.exp(0.05 * (i - n_bars)) for i in range(n_bars)]
             sum_w = sum(weights)
+            # Clamp bar relative position to [0.0, 1.0] to guarantee bias stays within [-100, +100]
             weighted_loc = sum(
-                w * ((df_bars['close'].iloc[i] - self.range_low) / self.delta_p)
+                w * max(0.0, min(1.0, (float(df_bars['close'].iloc[i]) - self.range_low) / self.delta_p))
                 for i, w in enumerate(weights)
             ) / sum_w if sum_w > 0 else 0.5
             recency = (1.0 - 2.0 * weighted_loc) * 100.0

@@ -110,6 +110,34 @@ def run_live_session(args):
 
             # Dump live state for dashboard
             try:
+                active_rung_orders = {}
+                for oid, o in getattr(engine, "orders", {}).items():
+                    r_idx = o.get("rung")
+                    if r_idx is not None:
+                        active_rung_orders[r_idx] = {
+                            "order_id": oid,
+                            "status": "WORKING"
+                        }
+
+                rung_list = []
+                for r in getattr(engine, "rungs", []):
+                    idx = r.get("index", 0)
+                    order_info = active_rung_orders.get(idx, {})
+                    rung_list.append({
+                        "index": idx,
+                        "side": r.get("side", "LONG"),
+                        "price": float(r.get("price", 0.0)),
+                        "tp": float(r.get("tp", 0.0)),
+                        "cap": getattr(engine, "lifecycle_caps", {}).get(idx, 9999),
+                        "rotations": getattr(engine, "rotations", {}).get(idx, 0),
+                        "status": order_info.get("status", "PENDING"),
+                        "order_id": order_info.get("order_id", "")
+                    })
+
+                bf = backfill_data if isinstance(backfill_data, dict) else {}
+                pre_rots = bf.get("total_rotations", 0)
+                tot_rots = sum(getattr(engine, "rotations", {}).values())
+
                 snap = {
                     "timestamp": datetime.datetime.now().isoformat(),
                     "instrument": args.instrument,
@@ -118,19 +146,22 @@ def run_live_session(args):
                     "container_low": args.low,
                     "container_high": args.high,
                     "current_price": current_price,
-                    "regime": getattr(engine, "regime", "STRONG_BULLISH"),
+                    "regime": getattr(engine, "bias_regime", getattr(engine, "regime", "ACTIVE")),
+                    "s_bias": bf.get("s_bias", 0.0),
+                    "total_rotations": tot_rots,
+                    "pre_rotations": pre_rots,
+                    "live_rotations": max(0, tot_rots - pre_rots),
+                    "resolution": getattr(engine, "resolution", 16),
+                    "s_step": getattr(engine, "s_step", 0.0),
+                    "harvest_step": getattr(engine, "harvest_step", 0.0),
+                    "stop_loss_long": getattr(engine, "stop_loss_long", 0.0),
+                    "stop_loss_short": getattr(engine, "stop_loss_short", 0.0),
+                    "max_budget": getattr(engine, "max_budget", 200.0),
                     "open_contracts": engine.open_contracts_count() if hasattr(engine, "open_contracts_count") else 0,
                     "active_risk": engine.active_risk() if hasattr(engine, "active_risk") else 0.0,
                     "total_pnl": sum(r.get("pnl", 0.0) for r in engine.records),
                     "tp_count": sum(1 for r in engine.records if r.get("type") == "TP"),
-                    "rungs": [
-                        {
-                            "price": getattr(r, "price", 0.0),
-                            "side": getattr(r, "side", "BUY"),
-                            "status": getattr(r, "status", "WORKING"),
-                            "order_id": str(getattr(r, "order_id", ""))
-                        } for r in getattr(engine, "rungs", [])
-                    ],
+                    "rungs": rung_list,
                     "records": engine.records[-10:] if hasattr(engine, "records") else []
                 }
                 with open("state.json.tmp", "w") as sf:
