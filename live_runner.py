@@ -122,9 +122,8 @@ def run_live_session(args):
             broker.cancel_all()
             time.sleep(1.0)
 
-            # Wait up to 5 seconds for live WebSocket price or REST snapshot
             print("[Runner] ⏳ Awaiting first CME quote...")
-            for _ in range(10):
+            for _ in range(15):
                 if hasattr(broker, "last_price") and broker.last_price > 0:
                     break
                 if hasattr(broker, "_ref_price"):
@@ -157,17 +156,28 @@ def run_live_session(args):
         "unrealized_pnl": 0.0
     }
 
-    # Tracking active brackets: idx -> {tp_boid, sl_boid, size, side}
     active_brackets = {}
 
-    def is_order_passive(side: str, price: float, market_price: float) -> bool:
-        """Enforces that limit orders strictly rest passively on the order book."""
+    def get_fresh_market_price() -> float:
+        """Fetches the most current price available from broker."""
+        if broker:
+            if hasattr(broker, "last_price") and broker.last_price > 0:
+                return broker.last_price
+            if hasattr(broker, "_ref_price"):
+                ref = broker._ref_price(args.instrument)
+                if ref and ref > 0:
+                    broker.last_price = ref
+                    return ref
+        return state["last_price"]
+
+    def is_order_strictly_passive(side: str, price: float, market_price: float) -> bool:
+        """Enforces a strict 2-tick ($0.50 pt) passive buffer to prevent marketable fills."""
         if market_price <= 0:
             return False
         if side.upper() in ("LONG", "BUY"):
-            return price <= (market_price - 0.25)
+            return price <= (market_price - 0.50)
         elif side.upper() in ("SHORT", "SELL"):
-            return price >= (market_price + 0.25)
+            return price >= (market_price + 0.50)
         return False
 
     print("\n🟢 Engine running — monitoring quotes and fills. Press Ctrl+C to stop.")
@@ -192,7 +202,6 @@ def run_live_session(args):
             elif elapsed >= freeze_at and state["status"] == "ACTIVE_QUOTING":
                 print(f"\n❄️ [T_freeze] HARVEST_ONLY mode (Canceling all unfilled entry quotes)...")
                 state["status"] = "HARVEST_ONLY_FREEZE"
-                # Cancel only initial entry quotes, leave active TP harvest limits intact
                 for idx, r in grid_by_idx.items():
                     if r["status"] == "WORKING" and r["entry_boid"] and broker:
                         broker.cancel_order(r["entry_boid"])
@@ -201,13 +210,12 @@ def run_live_session(args):
             # -----------------------------------------------------------------
             # 2. Update Market State
             # -----------------------------------------------------------------
+            live_px = get_fresh_market_price()
+            state["last_price"] = live_px
+
             if broker:
-                if hasattr(broker, "last_price") and broker.last_price > 0:
-                    state["last_price"] = broker.last_price
                 state["active_orders"] = len(broker.active) if hasattr(broker, "active") else 0
                 state["position"] = broker.get_position() if hasattr(broker, "get_position") else getattr(broker, "position", 0)
-
-            live_px = state["last_price"]
 
             # -----------------------------------------------------------------
             # 3. Process Inbound Fills (TP / SL / Entry)
@@ -231,7 +239,6 @@ def run_live_session(args):
                                 r["status"] = "FILLED_IN_POSITION"
                                 r["entry_boid"] = None
 
-                                # Bracket Sides
                                 bracket_side = "SELL" if r["side"] == "LONG" else "BUY"
                                 ts = int(time.time())
 
@@ -290,7 +297,7 @@ def run_live_session(args):
                         except Exception as e:
                             print(f"[Runner] ❌ Error handling TP fill {oid}: {e}")
 
-                    # CASE C: Stop-Loss Filled -> Cancel Take-Profit & Mark Invalidation
+                    # CASE C: Stop-Loss Filled -> Cancel TP, Mark Stopped, Trigger Invalidation Lockdown
                     elif oid.startswith("SL_"):
                         parts = oid.split("_")
                         try:
@@ -306,6 +313,15 @@ def run_live_session(args):
                                 r["sl_boid"] = None
                                 r["status"] = "STOPPED_OUT"
                                 print(f"🛑 [STOPPED OUT] L{idx} hit catastrophic stop at {fill_px:.2f}!")
+
+                                # Invalidation Lockdown: Catastrophic boundary breached
+                                print("🚨 [CONTAINER INVALIDATED] Stopping further order entries.")
+                                state["status"] = "INVALIDATED_STOPPED"
+                                for other_idx, other_r in grid_by_idx.items():
+                                    if other_r["status"] in ("WORKING", "IDLE", "AWAITING_RETRACEMENT"):
+                                        if other_r.get("entry_boid") and broker:
+                                            broker.cancel_order(other_r["entry_boid"])
+                                        other_r["status"] = "INVALIDATED"
                         except Exception as e:
                             print(f"[Runner] ❌ Error handling SL fill {oid}: {e}")
 
@@ -316,12 +332,11 @@ def run_live_session(args):
                 directive = bias_data.get("directive", "TWO_SIDED_BALANCED")
 
                 for idx, r in grid_by_idx.items():
-                    # Skip buffers, eq mid, or capped rungs
                     if r["cap"] == 0 or r["contracts"] == 0 or r["rotations"] >= r["cap"]:
                         continue
 
-                    # If currently holding position or in bracket, do not re-quote entry
-                    if r["status"] in ("FILLED_IN_POSITION", "STOPPED_OUT"):
+                    # If already filled, holding position, or stopped out, do not quote entry
+                    if r["status"] in ("FILLED_IN_POSITION", "STOPPED_OUT", "INVALIDATED", "WORKING"):
                         continue
 
                     # Bias directive filtering
@@ -332,28 +347,27 @@ def run_live_session(args):
                         r["status"] = "DISARMED_BIAS"
                         continue
 
-                    # Check passive quoting spread condition
-                    is_passive = is_order_passive(r["side"], r["price"], live_px)
+                    # Fresh price check before dispatch
+                    current_market_px = get_fresh_market_price()
+                    is_passive = is_order_strictly_passive(r["side"], r["price"], current_market_px)
 
-                    # If order is NOT working yet:
-                    if r["status"] in ("IDLE", "AWAITING_RETRACEMENT", "ROTATED_HARVEST"):
-                        if is_passive:
-                            oid = f"GRID_{args.instrument}_L{r['index']}_{int(now)}"
-                            boid = broker.place_limit_order(
-                                oid=oid,
-                                side=r["side"],
-                                price=r["price"],
-                                size=r["contracts"],
-                                instrument=args.instrument,
-                                tif="GTC"
-                            )
-                            if boid:
-                                r["entry_boid"] = boid
-                                r["status"] = "WORKING"
-                            else:
-                                r["status"] = "REJECTED"
+                    if is_passive:
+                        oid = f"GRID_{args.instrument}_L{r['index']}_{int(now)}"
+                        boid = broker.place_limit_order(
+                            oid=oid,
+                            side=r["side"],
+                            price=r["price"],
+                            size=r["contracts"],
+                            instrument=args.instrument,
+                            tif="GTC"
+                        )
+                        if boid:
+                            r["entry_boid"] = boid
+                            r["status"] = "WORKING"
                         else:
-                            r["status"] = "AWAITING_RETRACEMENT"
+                            r["status"] = "REJECTED"
+                    else:
+                        r["status"] = "AWAITING_RETRACEMENT"
 
             # -----------------------------------------------------------------
             # 5. Live Directional Bias & Telemetry Broadcast
