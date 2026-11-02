@@ -160,8 +160,8 @@ class IronbeamAdapter:
         return True
 
     def _fetch_account(self, base, token):
-        env_acc = os.environ.get("IRONBEAM_ACCOUNT")
-        if env_acc and not self.is_live_exec:
+        if base == self.DEMO_BASE:
+            env_acc = os.environ.get("IRONBEAM_ACCOUNT", "51428111")
             return str(env_acc).strip()
 
         try:
