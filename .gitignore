@@ -1,0 +1,19 @@
+# Environment & Secrets
+.env
+*.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Archives & Temporary Artifacts
+*.tar.gz
+*.zip
+*.log
+.DS_Store
