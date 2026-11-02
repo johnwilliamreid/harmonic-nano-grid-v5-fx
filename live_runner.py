@@ -57,7 +57,7 @@ def run_live_session(args):
         brk_high_poc=args.brk_high_poc
     )
 
-    # 2. Compute Directional Bias
+    # 2. Compute Initial Directional Bias
     bias_calc = DirectionalBiasCalculator(default_timeframe=args.tf)
     bias_data = bias_calc.compute_bias(
         range_low=args.low,
@@ -70,13 +70,14 @@ def run_live_session(args):
         timeframe=args.tf
     )
 
-    # 3. Build Telemetry Matrix List
+    # 3. Build Internal State Matrix
+    grid_by_idx = {}
     grid_list = []
     for idx in sorted(grid_dict.keys()):
         r = grid_dict[idx]
         geo_p = round(args.low + idx * geom.s_step, 2)
         snap_delta = round(r["price"] - geo_p, 2)
-        grid_list.append({
+        item = {
             "index": idx,
             "side": r["side"],
             "role": r["role"],
@@ -93,13 +94,17 @@ def run_live_session(args):
             "rr_ratio": r.get("rr_ratio", 0.0),
             "contracts": r.get("contracts", 0),
             "weight": r.get("weight", 0),
-            "boid": None,
-            "status": "ARMED" if r["side"] != "MID" and r["cap"] > 0 else "EXIT_ONLY"
-        })
+            "entry_boid": None,
+            "tp_boid": None,
+            "sl_boid": None,
+            "status": "IDLE" if r["side"] != "MID" and r["cap"] > 0 else "EXIT_ONLY"
+        }
+        grid_by_idx[idx] = item
+        grid_list.append(item)
 
     start_dashboard_server(port=8080)
 
-    # 4. Connect Broker & Wire Instrument BEFORE WebSocket
+    # 4. Connect Broker
     broker = None
     if args.source == "ironbeam":
         try:
@@ -109,62 +114,31 @@ def run_live_session(args):
                 print("[Runner] ❌ Ironbeam authentication failed!")
                 return
             
-            # CRITICAL: set_instrument FIRST so data_symbol is configured
             broker.set_instrument(args.instrument)
             broker.start_websocket()
             print(f"[Runner] ✅ Connected to {broker.exec_venue} (Account {broker.account_id})")
 
-            # Clean up any stale orders from prior test sessions
             print("[Runner] 🧹 Cancelling prior working orders...")
             broker.cancel_all()
             time.sleep(1.0)
 
-            # Warm up price via REST snapshot if WS is still connecting
-            if hasattr(broker, "_ref_price"):
-                ref = broker._ref_price(args.instrument)
-                if ref and ref > 0:
-                    broker.last_price = ref
-                    print(f"[Runner] 🎯 Reference snapshot price: {ref:.2f}")
+            # Wait up to 5 seconds for live WebSocket price or REST snapshot
+            print("[Runner] ⏳ Awaiting first CME quote...")
+            for _ in range(10):
+                if hasattr(broker, "last_price") and broker.last_price > 0:
+                    break
+                if hasattr(broker, "_ref_price"):
+                    ref = broker._ref_price(args.instrument)
+                    if ref and ref > 0:
+                        broker.last_price = ref
+                        break
+                time.sleep(0.5)
+
+            print(f"[Runner] 🎯 Reference price: {getattr(broker, 'last_price', 0.0):.2f}")
 
         except Exception as e:
             print(f"[Runner] ❌ Broker init error: {e}")
             return
-
-    # 5. Dispatch Initial Resting Grid Orders
-    if broker and args.source == "ironbeam":
-        print("\n⚡ [Dispatch] Arming resting limit orders into Ironbeam...")
-        directive = bias_data.get("directive", "TWO_SIDED_BALANCED")
-        
-        for r in grid_list:
-            if r["cap"] == 0 or r["contracts"] == 0:
-                continue
-
-            # Check Directional Bias Directive Gates
-            if directive == "DISARM_SHORTS" and r["side"] == "SHORT":
-                r["status"] = "DISARMED_BIAS"
-                continue
-            if directive == "DISARM_LONGS" and r["side"] == "LONG":
-                r["status"] = "DISARMED_BIAS"
-                continue
-
-            oid = f"GRID_{args.instrument}_L{r['index']}_{int(time.time())}"
-            try:
-                boid = broker.place_limit_order(
-                    oid=oid,
-                    side=r["side"],
-                    price=r["price"],
-                    size=r["contracts"],
-                    instrument=args.instrument,
-                    tif="GTC"
-                )
-                if boid:
-                    r["boid"] = boid
-                    r["status"] = "WORKING"
-                else:
-                    r["status"] = "REJECTED"
-            except Exception as e:
-                print(f"[Runner] ❌ Failed to dispatch L{r['index']}: {e}")
-                r["status"] = "ERROR"
 
     t_start = time.time()
     tf_rule = TF_LIFECYCLE.get(args.tf, TF_LIFECYCLE["15m"])
@@ -176,42 +150,214 @@ def run_live_session(args):
         "status": "ACTIVE_QUOTING",
         "paused": False,
         "flatten": False,
-        "last_price": p_eq,
+        "last_price": getattr(broker, "last_price", p_eq) if broker else p_eq,
         "position": 0,
         "active_orders": 0,
         "realized_pnl": 0.0,
         "unrealized_pnl": 0.0
     }
 
-    print("\n🟢 Engine running — press Ctrl+C to stop.")
+    # Tracking active brackets: idx -> {tp_boid, sl_boid, size, side}
+    active_brackets = {}
+
+    def is_order_passive(side: str, price: float, market_price: float) -> bool:
+        """Enforces that limit orders strictly rest passively on the order book."""
+        if market_price <= 0:
+            return False
+        if side.upper() in ("LONG", "BUY"):
+            return price <= (market_price - 0.25)
+        elif side.upper() in ("SHORT", "SELL"):
+            return price >= (market_price + 0.25)
+        return False
+
+    print("\n🟢 Engine running — monitoring quotes and fills. Press Ctrl+C to stop.")
     try:
         while not state["flatten"]:
-            elapsed = time.time() - t_start
+            now = time.time()
+            elapsed = now - t_start
             rem_freeze = max(0, freeze_at - elapsed)
             rem_flatten = max(0, max_duration - elapsed)
 
-            # Lifecycle transitions
+            # -----------------------------------------------------------------
+            # 1. Lifecycle Check
+            # -----------------------------------------------------------------
             if elapsed >= max_duration:
-                print(f"\n⏰ [T_flatten] Session lifespan reached! Flattening all positions...")
+                print(f"\n⏰ [T_flatten] Session lifespan reached! Flattening...")
                 state["status"] = "FLATTENED"
                 state["flatten"] = True
-                if broker and hasattr(broker, "flatten_position"):
+                if broker:
                     broker.flatten_position(args.instrument)
-                if broker and hasattr(broker, "cancel_all"):
                     broker.cancel_all()
+                break
             elif elapsed >= freeze_at and state["status"] == "ACTIVE_QUOTING":
-                print(f"\n❄️ [T_freeze] Entering HARVEST_ONLY mode (canceling entry quotes)...")
+                print(f"\n❄️ [T_freeze] HARVEST_ONLY mode (Canceling all unfilled entry quotes)...")
                 state["status"] = "HARVEST_ONLY_FREEZE"
-                if broker and hasattr(broker, "cancel_all"):
-                    broker.cancel_all()
+                # Cancel only initial entry quotes, leave active TP harvest limits intact
+                for idx, r in grid_by_idx.items():
+                    if r["status"] == "WORKING" and r["entry_boid"] and broker:
+                        broker.cancel_order(r["entry_boid"])
+                        r["status"] = "FROZEN"
 
-            # Read Real Broker State
+            # -----------------------------------------------------------------
+            # 2. Update Market State
+            # -----------------------------------------------------------------
             if broker:
-                state["last_price"] = getattr(broker, "last_price", 0.0)
+                if hasattr(broker, "last_price") and broker.last_price > 0:
+                    state["last_price"] = broker.last_price
                 state["active_orders"] = len(broker.active) if hasattr(broker, "active") else 0
                 state["position"] = broker.get_position() if hasattr(broker, "get_position") else getattr(broker, "position", 0)
 
-            # Recompute Live Directional Bias with Chrono Decay
+            live_px = state["last_price"]
+
+            # -----------------------------------------------------------------
+            # 3. Process Inbound Fills (TP / SL / Entry)
+            # -----------------------------------------------------------------
+            if broker and hasattr(broker, "drain_fills"):
+                fills = broker.drain_fills()
+                for fl in fills:
+                    oid = fl.get("order_id", "")
+                    fill_side = fl.get("side", "")
+                    fill_px = fl.get("price", 0.0)
+                    fill_qty = fl.get("size", 0)
+                    print(f"\n⚡ [FILL EVENT] {fill_side} {fill_qty} @ {fill_px:.2f} (oid={oid})")
+
+                    # CASE A: Entry Limit Filled -> Deploy TP + SL Bracket
+                    if oid.startswith("GRID_"):
+                        parts = oid.split("_")
+                        try:
+                            idx = int(parts[2].replace("L", ""))
+                            r = grid_by_idx.get(idx)
+                            if r:
+                                r["status"] = "FILLED_IN_POSITION"
+                                r["entry_boid"] = None
+
+                                # Bracket Sides
+                                bracket_side = "SELL" if r["side"] == "LONG" else "BUY"
+                                ts = int(time.time())
+
+                                # 1. Place Uncoupled 1/8 TP Limit Order
+                                tp_oid = f"TP_{args.instrument}_L{idx}_{ts}"
+                                tp_boid = broker.place_limit_order(
+                                    oid=tp_oid,
+                                    side=bracket_side,
+                                    price=r["tp"],
+                                    size=fill_qty,
+                                    reduce_only=True,
+                                    instrument=args.instrument,
+                                    tif="GTC"
+                                )
+
+                                # 2. Place Invalidation Catastrophic Stop
+                                sl_oid = f"SL_{args.instrument}_L{idx}_{ts}"
+                                sl_boid = broker.place_stop_order(
+                                    oid=sl_oid,
+                                    side=bracket_side,
+                                    price=r["sl"],
+                                    size=fill_qty,
+                                    instrument=args.instrument,
+                                    tif="GTC"
+                                )
+
+                                r["tp_boid"] = tp_boid
+                                r["sl_boid"] = sl_boid
+                                active_brackets[idx] = {
+                                    "tp_boid": tp_boid, "sl_boid": sl_boid,
+                                    "tp_oid": tp_oid, "sl_oid": sl_oid,
+                                    "size": fill_qty, "side": r["side"]
+                                }
+                                print(f"🎯 [Bracket Deployed L{idx}] TP Limit: {r['tp']:.2f} | Stop: {r['sl']:.2f}")
+
+                        except Exception as e:
+                            print(f"[Runner] ❌ Error handling entry fill {oid}: {e}")
+
+                    # CASE B: Take-Profit Limit Filled -> Cancel Stop Loss & Increment Rotation
+                    elif oid.startswith("TP_"):
+                        parts = oid.split("_")
+                        try:
+                            idx = int(parts[2].replace("L", ""))
+                            r = grid_by_idx.get(idx)
+                            if r and idx in active_brackets:
+                                brk = active_brackets.pop(idx)
+                                if brk.get("sl_boid"):
+                                    print(f"🧹 [OCO] Canceling paired stop {brk['sl_boid']} for L{idx}")
+                                    broker.cancel_order(brk["sl_boid"])
+
+                                r["rotations"] += 1
+                                r["tp_boid"] = None
+                                r["sl_boid"] = None
+                                r["status"] = "ROTATED_HARVEST"
+                                print(f"🏆 [HARVEST COMPLETE] L{idx} harvested at {fill_px:.2f}! Total rotations: {r['rotations']}/{r['cap']}")
+                        except Exception as e:
+                            print(f"[Runner] ❌ Error handling TP fill {oid}: {e}")
+
+                    # CASE C: Stop-Loss Filled -> Cancel Take-Profit & Mark Invalidation
+                    elif oid.startswith("SL_"):
+                        parts = oid.split("_")
+                        try:
+                            idx = int(parts[2].replace("L", ""))
+                            r = grid_by_idx.get(idx)
+                            if r and idx in active_brackets:
+                                brk = active_brackets.pop(idx)
+                                if brk.get("tp_boid"):
+                                    print(f"🧹 [OCO] Canceling paired TP {brk['tp_boid']} for L{idx}")
+                                    broker.cancel_order(brk["tp_boid"])
+
+                                r["tp_boid"] = None
+                                r["sl_boid"] = None
+                                r["status"] = "STOPPED_OUT"
+                                print(f"🛑 [STOPPED OUT] L{idx} hit catastrophic stop at {fill_px:.2f}!")
+                        except Exception as e:
+                            print(f"[Runner] ❌ Error handling SL fill {oid}: {e}")
+
+            # -----------------------------------------------------------------
+            # 4. Passive Order Dispatch & Retracement Quoting
+            # -----------------------------------------------------------------
+            if broker and state["status"] == "ACTIVE_QUOTING" and live_px > 0:
+                directive = bias_data.get("directive", "TWO_SIDED_BALANCED")
+
+                for idx, r in grid_by_idx.items():
+                    # Skip buffers, eq mid, or capped rungs
+                    if r["cap"] == 0 or r["contracts"] == 0 or r["rotations"] >= r["cap"]:
+                        continue
+
+                    # If currently holding position or in bracket, do not re-quote entry
+                    if r["status"] in ("FILLED_IN_POSITION", "STOPPED_OUT"):
+                        continue
+
+                    # Bias directive filtering
+                    if directive == "DISARM_SHORTS" and r["side"] == "SHORT":
+                        r["status"] = "DISARMED_BIAS"
+                        continue
+                    if directive == "DISARM_LONGS" and r["side"] == "LONG":
+                        r["status"] = "DISARMED_BIAS"
+                        continue
+
+                    # Check passive quoting spread condition
+                    is_passive = is_order_passive(r["side"], r["price"], live_px)
+
+                    # If order is NOT working yet:
+                    if r["status"] in ("IDLE", "AWAITING_RETRACEMENT", "ROTATED_HARVEST"):
+                        if is_passive:
+                            oid = f"GRID_{args.instrument}_L{r['index']}_{int(now)}"
+                            boid = broker.place_limit_order(
+                                oid=oid,
+                                side=r["side"],
+                                price=r["price"],
+                                size=r["contracts"],
+                                instrument=args.instrument,
+                                tif="GTC"
+                            )
+                            if boid:
+                                r["entry_boid"] = boid
+                                r["status"] = "WORKING"
+                            else:
+                                r["status"] = "REJECTED"
+                        else:
+                            r["status"] = "AWAITING_RETRACEMENT"
+
+            # -----------------------------------------------------------------
+            # 5. Live Directional Bias & Telemetry Broadcast
+            # -----------------------------------------------------------------
             live_brk_age = args.brk_age + elapsed
             bias_update = bias_calc.compute_bias(
                 range_low=args.low,
@@ -231,7 +377,6 @@ def run_live_session(args):
             bias_data["touches"] = args.brk_touches
             bias_data["k"] = bias_calc.TIMEFRAME_DECAY.get(args.tf, 0.00025)
 
-            # Stream Telemetry to Cockpit
             update_telemetry({
                 "venue": getattr(broker, "exec_venue", "PAPER DEMO") if broker else "PAPER DEMO",
                 "account": getattr(broker, "account_id", "51428111") if broker else "51428111",
@@ -257,7 +402,7 @@ def run_live_session(args):
                     "t_max_min": int(max_duration / 60),
                     "t_freeze_min": int((max_duration - freeze_at) / 60)
                 },
-                "grid": grid_list
+                "grid": list(grid_by_idx.values())
             })
 
             time.sleep(1.0)
@@ -266,7 +411,7 @@ def run_live_session(args):
         print("\n[Runner] Graceful shutdown requested...")
     finally:
         if broker and hasattr(broker, "cancel_all"):
-            print("[Runner] Cancelling all active grid orders...")
+            print("[Runner] Cancelling working orders...")
             broker.cancel_all()
         print("[Runner] Session cleanly stopped.")
 
