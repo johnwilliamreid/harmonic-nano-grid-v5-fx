@@ -50,7 +50,8 @@ seen_ids = set()
 unique_working = []
 for o in working_orders:
     oid = str(o.get("orderId", o.get("id", "")))
-    if oid and oid not in seen_ids:
+    st = str(o.get("status", o.get("orderStatus", ""))).upper()
+    if oid and oid not in seen_ids and st in ("NEW", "WORKING", "OPEN", "ACCEPTED", "PENDING"):
         seen_ids.add(oid)
         unique_working.append(o)
 
