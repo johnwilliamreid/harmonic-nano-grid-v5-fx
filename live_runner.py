@@ -46,7 +46,7 @@ def run_live_session(args):
         resolution=16,
         multiplier=mult,
         fee_per_rt=fee,
-        r_budget=200.00
+        r_budget=args.risk
     )
     grid_dict = geom.generate_grid(
         brk_low_back=args.brk_low_back or args.low,
@@ -94,6 +94,9 @@ def run_live_session(args):
             "rr_ratio": r.get("rr_ratio", 0.0),
             "contracts": r.get("contracts", 0),
             "weight": r.get("weight", 0),
+            "decimal_multiplier": r.get("decimal_multiplier", 1.0),
+            "exact_qty": r.get("exact_qty", 0.0),
+            "unit_risk": r.get("unit_risk", 0.0),
             "entry_boid": None,
             "tp_boid": None,
             "sl_boid": None,
@@ -436,6 +439,7 @@ if __name__ == "__main__":
     parser.add_argument("--low", type=float, required=True, help="Macro range low (L0)")
     parser.add_argument("--high", type=float, required=True, help="Macro range high (L16)")
     parser.add_argument("--live-exec", action="store_true", help="Send REAL-MONEY orders to Ironbeam (LIVE)")
+    parser.add_argument("--risk", type=float, default=200.0, help="Dollar risk budget per level")
     parser.add_argument("--tf", type=str, default="15m", choices=["15m", "5m", "1m", "15s", "5s", "1s"])
     parser.add_argument("--brk-low-front", type=float, default=None)
     parser.add_argument("--brk-low-back", type=float, default=None)

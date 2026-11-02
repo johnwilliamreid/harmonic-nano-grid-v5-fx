@@ -139,22 +139,29 @@ class HarmonicGridGeometry:
                 risk_dollar = 0.0
                 reward_dollar = 0.0
 
-            # Dynamic Integer Sizing: Q_i = max(1, floor((R_budget * W_norm) / K_i))
-            if w_i > 0 and risk_dollar > 0:
-                w_norm = w_i / 10.0
-                allocated_budget = self.r_budget * w_norm
-                contracts = max(1, math.floor(allocated_budget / risk_dollar))
+            # Dynamic Decimal Multiplier & Integer Contract Sizing
+            if cap > 0 and risk_dollar > 0:
+                base_dist = 8.0 * self.s_step
+                base_k = (base_dist * self.multiplier) + self.fee_per_rt
+                decimal_mult = round(base_k / risk_dollar, 4)
+                exact_qty = self.r_budget / risk_dollar
+                contracts = max(1, round(exact_qty))
+                total_risk = round(contracts * risk_dollar, 2)
+                total_reward = round(contracts * reward_dollar, 2)
             else:
+                decimal_mult = 0.0
+                exact_qty = 0.0
                 contracts = 0
-
+                total_risk = 0.0
+                total_reward = 0.0
             rr_ratio = round(reward_dollar / risk_dollar, 2) if risk_dollar > 0 else 0.0
 
             rungs[i] = {
                 "index": i, "side": side, "price": p, "tp": tp_price, "sl": sl_price,
                 "target_rung": target_idx, "cap": cap, "rotations": 0, "status": "PENDING",
                 "role": role, "raw_price": round(raw_prices[i], 2),
-                "dist_stop": round(dist_stop, 2), "risk_dollar": risk_dollar,
-                "reward_dollar": reward_dollar, "rr_ratio": rr_ratio,
-                "weight": w_i, "contracts": contracts
+                "dist_stop": round(dist_stop, 2), "risk_dollar": total_risk, "unit_risk": risk_dollar,
+                "reward_dollar": total_reward, "unit_reward": reward_dollar, "rr_ratio": rr_ratio,
+                "weight": w_i, "contracts": contracts, "decimal_multiplier": decimal_mult, "exact_qty": round(exact_qty, 4), "decimal_multiplier": decimal_mult, "exact_qty": round(exact_qty, 4), "decimal_multiplier": decimal_mult, "exact_qty": round(exact_qty, 4)
             }
         return rungs
