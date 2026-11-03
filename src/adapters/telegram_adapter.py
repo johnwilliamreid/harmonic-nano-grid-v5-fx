@@ -5,14 +5,11 @@ import threading
 import requests
 from typing import Optional, List, Tuple, Callable, Dict, Any
 
-class TelegramBridge:
-    """
-    Bidirectional Telegram Bridge:
-    - Sends structured telemetry and inline confirmation keyboards.
-    - Handles interactive multi-option grid proposal cards and arming callbacks.
-    - Polls updates to handle /status, /flatten, /propose, and /risk commands.
-    """
+from src.config import TICK_SIZES, MULTIPLIERS, COMMISSION_PER_RT
+from src.core.grid_geometry import HarmonicGridGeometry, round_to_tick
+from src.core.directional_bias import DirectionalBiasCalculator
 
+class TelegramBridge:
     def __init__(
         self,
         token: Optional[str] = None,
@@ -27,100 +24,318 @@ class TelegramBridge:
         self.polling_active = False
         self.pending_proposals: Dict[str, Dict[str, Any]] = {}
 
-    def send(self, text: str, buttons: Optional[List[List[Tuple[str, str]]]] = None):
+        self.wizard: Dict[str, Any] = {
+            "state": "IDLE",
+            "low": None,
+            "high": None,
+            "risk": 200.0,
+            "tf": "1hr",
+            "brk_low_front": None,
+            "brk_low_back": None,
+            "brk_high_front": None,
+            "brk_high_back": None,
+            "brk_dir": "UP",
+            "brk_touches": 0,
+            "brk_age_mins": 15.0,
+            "macro_bias": "NEUTRAL",  # BEARISH, NEUTRAL, BULLISH
+            "execution_mode": "BALANCED" # BALANCED, SUGGESTED, SHORTS_ONLY, LONGS_ONLY
+        }
+
+    def answer_callback(self, callback_id: str, text: Optional[str] = None):
+        if not self.api_url:
+            return
+        payload = {"callback_query_id": callback_id}
+        if text:
+            payload["text"] = text
+        try:
+            requests.post(f"{self.api_url}/answerCallbackQuery", json=payload, timeout=5)
+        except Exception:
+            pass
+
+    def send(self, text: str, buttons: Optional[List[List[Tuple[str, str]]]] = None) -> Optional[int]:
         if not self.api_url or not self.chat_id:
             print(f"\n[TELEGRAM TELEMETRY]\n{text}\n")
             if buttons:
                 print(f"[BUTTONS]: {buttons}\n")
-            return
+            return None
 
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "HTML"
         }
 
         if buttons:
-            inline_keyboard = [
-                [{"text": label, "callback_data": data} for label, data in row]
-                for row in buttons
-            ]
-            payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard})
+            payload["reply_markup"] = {
+                "inline_keyboard": [
+                    [{"text": label, "callback_data": data} for label, data in row]
+                    for row in buttons
+                ]
+            }
 
         try:
-            requests.post(f"{self.api_url}/sendMessage", json=payload, timeout=5)
+            resp = requests.post(f"{self.api_url}/sendMessage", json=payload, timeout=8)
+            res_data = resp.json()
+            if not res_data.get("ok"):
+                print(f"[Telegram] ❌ API Error {resp.status_code}: {res_data.get('description')}")
+                return None
+            return res_data.get("result", {}).get("message_id")
         except Exception as e:
-            print(f"[Telegram] ⚠️ Send failed: {e}")
+            print(f"[Telegram] ⚠️ Send request failed: {e}")
+            return None
 
     def edit_message(self, message_id: int, text: str, buttons: Optional[List[List[Tuple[str, str]]]] = None):
         if not self.api_url or not self.chat_id:
             return
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": self.chat_id,
             "message_id": message_id,
             "text": text,
             "parse_mode": "HTML"
         }
         if buttons:
-            inline_keyboard = [
-                [{"text": label, "callback_data": data} for label, data in row]
-                for row in buttons
-            ]
-            payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard})
+            payload["reply_markup"] = {
+                "inline_keyboard": [
+                    [{"text": label, "callback_data": data} for label, data in row]
+                    for row in buttons
+                ]
+            }
         try:
-            requests.post(f"{self.api_url}/editMessageText", json=payload, timeout=5)
+            requests.post(f"{self.api_url}/editMessageText", json=payload, timeout=8)
         except Exception as e:
             print(f"[Telegram] ⚠️ Edit failed: {e}")
 
-    def send_proposal_card(self, proposal: Dict[str, Any], proposal_id: Optional[str] = None):
-        """Dispatches an interactive Telegram proposal card with Best Fit recommendation."""
-        inst = proposal["instrument"]
-        low = proposal["range_low"]
-        high = proposal["range_high"]
-        pid = proposal_id or f"{inst}_{int(low)}_{int(high)}"
-        self.pending_proposals[pid] = proposal
-
-        diag = proposal["diagnosis"]
-        opt_a = proposal["options"]["OPTION_A"]
-        opt_b = proposal["options"]["OPTION_B"]
-        opt_c = proposal["options"]["OPTION_C"]
-        best_fit = diag["best_fit"]
-
+    def prompt_step1_range(self):
+        self.wizard["state"] = "AWAITING_RANGE"
         msg = (
-            f"📐 <b>GRID PROPOSAL — {inst}</b>\n"
+            "📐 <b>STEP 1 OF 4: ENTER CONTAINER RANGE</b>\n"
+            "───────────────────────────────────\n"
+            f"Budget: <b>${self.wizard['risk']:,.2f}</b> | Timeframe: <b>{self.wizard['tf']}</b>\n\n"
+            "Reply with container Low and High:\n"
+            "👉 <code>27641.50 28526.00</code>"
+        )
+        buttons = [
+            [("⏱️ 1hr", "setwiztf:1hr"), ("⏱️ 15m", "setwiztf:15m"), ("💵 $200", "setwizrisk:200")],
+            [("❌ Cancel", "wizcancel")]
+        ]
+        self.send(msg, buttons=buttons)
+
+    def prompt_step2_breaker_edges(self):
+        self.wizard["state"] = "AWAITING_BREAKERS"
+        delta_p = self.wizard["high"] - self.wizard["low"]
+        msg = (
+            "🔍 <b>STEP 2 OF 4: BREAKER EDGES &amp; MACRO CONTEXT</b>\n"
+            "───────────────────────────────────\n"
+            f"Container: <code>{self.wizard['low']:.2f} — {self.wizard['high']:.2f}</code> (Δ <code>{delta_p:.2f}</code> pts)\n"
+            f"Macro Context: <b>{self.wizard['macro_bias']}</b> (Optional suggestion modifier)\n\n"
+            "Reply with 4 prices for Demand and Supply edges:\n"
+            "👉 <code>[demand_front] [demand_back] [supply_front] [supply_back]</code>\n\n"
+            "<i>Example:</i> <code>27956.25 27641.50 28280.25 28526.00</code>"
+        )
+        buttons = [
+            [("🐻 Macro Bearish", "setmacro:BEARISH"), ("⚖️ Macro Neutral", "setmacro:NEUTRAL"), ("🐂 Macro Bullish", "setmacro:BULLISH")],
+            [("⚡ Use Geometric Breaker Lines", "use_geom_breakers")],
+            [("❌ Cancel", "wizcancel")]
+        ]
+        self.send(msg, buttons=buttons)
+
+    def prompt_step3_breaker_direction(self):
+        self.wizard["state"] = "AWAITING_DIR"
+        msg = (
+            "🧭 <b>STEP 3 OF 4: RECENT BREAKER SIDE</b>\n"
+            "───────────────────────────────────\n"
+            "Which breaker formed most recently?"
+        )
+        buttons = [
+            [("🟢 Demand Formed (Bullish Imbalance)", "setdir:UP")],
+            [("🔴 Supply Formed (Bearish Imbalance)", "setdir:DOWN")],
+            [("❌ Cancel", "wizcancel")]
+        ]
+        self.send(msg, buttons=buttons)
+
+    def prompt_step4_touches_and_age(self):
+        self.wizard["state"] = "AWAITING_TOUCHES"
+        msg = (
+            "🎯 <b>STEP 4 OF 4: BREAKER MITIGATION</b>\n"
+            "───────────────────────────────────\n"
+            "How many mitigation touches has the recent breaker front taken?"
+        )
+        buttons = [
+            [("0 (Fresh / Untouched)", "settouches:0"), ("1 Touch", "settouches:1")],
+            [("2 Touches", "settouches:2"), ("3+ Touches (Weakened)", "settouches:3")]
+        ]
+        self.send(msg, buttons=buttons)
+
+    def prompt_user_entered_age(self):
+        self.wizard["state"] = "AWAITING_AGE"
+        msg = (
+            "⏳ <b>BREAKER FORMATION AGE</b>\n"
+            "───────────────────────────────────\n"
+            "How many minutes ago did this breaker form?\n\n"
+            "Reply with the number of minutes:\n"
+            "👉 <code>15</code>  (or <code>30</code>, <code>45</code>, etc.)"
+        )
+        self.send(msg)
+
+    def send_dual_review_card(self):
+        low = self.wizard["low"]
+        high = self.wizard["high"]
+        risk = self.wizard["risk"]
+        tf = self.wizard["tf"]
+        delta_p = high - low
+        p_eq = round(low + 0.5 * delta_p, 2)
+
+        b_l_front = self.wizard["brk_low_front"] or round(low + 0.3125 * delta_p, 2)
+        b_l_back = self.wizard["brk_low_back"] or round(low + 0.1875 * delta_p, 2)
+        b_h_front = self.wizard["brk_high_front"] or round(low + 0.6875 * delta_p, 2)
+        b_h_back = self.wizard["brk_high_back"] or round(low + 0.8125 * delta_p, 2)
+        elapsed_seconds = float(self.wizard["brk_age_mins"]) * 60.0
+
+        p_ref = getattr(self, "last_market_price", None) or p_eq
+
+        bias_calc = DirectionalBiasCalculator(default_timeframe=tf)
+        bias = bias_calc.compute_bias(
+            range_low=low,
+            range_high=high,
+            breaker_low_front=b_l_front,
+            breaker_high_front=b_h_front,
+            last_breaker_dir=self.wizard["brk_dir"],
+            elapsed_seconds=elapsed_seconds,
+            mitigation_touches=self.wizard["brk_touches"],
+            timeframe=tf,
+            current_price=p_ref
+        )
+        
+        raw_score = bias.get("s_bias", bias.get("score", 0.0))
+        macro = self.wizard.get("macro_bias", "NEUTRAL")
+        
+        # Macro Suggestion Drag (Informational suggestion baseline)
+        if macro == "BEARISH":
+            macro_drag = -25.0
+            macro_note = "🐻 Macro Trend: Bearish (Applies -25.0 suggestion drag)"
+        elif macro == "BULLISH":
+            macro_drag = +25.0
+            macro_note = "🐂 Macro Trend: Bullish (Applies +25.0 suggestion boost)"
+        else:
+            macro_drag = 0.0
+            macro_note = "⚖️ Macro Trend: Neutral"
+
+        s_composite = max(-100.0, min(100.0, round(raw_score + macro_drag, 1)))
+
+        geom_nnq = HarmonicGridGeometry(
+            range_low=low, range_high=high, tick_size=0.50,
+            multiplier=0.20, fee_per_rt=0.98, r_side_budget=risk, instrument="NNQ"
+        )
+        pkg_nnq = geom_nnq.generate_proposal_package(
+            brk_low_front=b_l_front, brk_low_back=b_l_back,
+            brk_high_front=b_h_front, brk_high_back=b_h_back
+        )
+
+        geom_mnq = HarmonicGridGeometry(
+            range_low=low, range_high=high, tick_size=0.25,
+            multiplier=2.0, fee_per_rt=1.94, r_side_budget=risk, instrument="MNQ"
+        )
+        pkg_mnq = geom_mnq.generate_proposal_package(
+            brk_low_front=b_l_front, brk_low_back=b_l_back,
+            brk_high_front=b_h_front, brk_high_back=b_h_back
+        )
+
+        pid = f"RANGE_{int(low)}_{int(high)}"
+        self.pending_proposals[f"NNQ_{pid}"] = pkg_nnq
+        self.pending_proposals[f"MNQ_{pid}"] = pkg_mnq
+
+        opts_nnq = pkg_nnq["options"]
+        opts_mnq = pkg_mnq["options"]
+        diag = pkg_nnq["diagnosis"]
+        d_brk = diag["demand_breaker"]
+        s_brk = diag["supply_breaker"]
+
+        touch_penalty_val = max(0.20, 1.0 - (0.25 * self.wizard["brk_touches"]))
+        p_disp_label = "At Eq (Neutral)" if abs(bias.get("s_price_disp", 0.0)) < 1.0 else (
+            f"+{bias.get('s_price_disp'):.1f}% in Premium" if bias.get("s_price_disp", 0.0) > 0 else f"{bias.get('s_price_disp'):.1f}% in Discount"
+        )
+
+        # -------------------------------------------------------------
+        # Message 1: Decision Telemetry & Suggested Directives
+        # -------------------------------------------------------------
+        msg_telemetry = (
+            f"📐 <b>CONTAINER &amp; DECISION TELEMETRY</b>\n"
             f"───────────────────────────────────\n"
-            f"• Container: <code>{low:.2f} — {high:.2f}</code> (Δ <code>{proposal['delta_p']:.2f}</code> pts)\n"
-            f"• Step (S<sub>1/16</sub>): <code>{proposal['s_step']:.2f}</code> pts | Harvest (S<sub>1/8</sub>): <code>{proposal['s_harvest']:.2f}</code> pts\n"
-            f"• Boundary: <code>L0: {proposal['sl_low']:.2f} | L16: {proposal['sl_high']:.2f}</code>\n"
-            f"• Side Budget: <b>${proposal['r_side_budget']:,.2f}</b> | Fee: <b>${proposal['fee_per_rt']:.2f}</b> RT\n\n"
-            f"🔍 <b>STRUCTURE DIAGNOSIS</b>\n"
-            f"• Detected Breaker: <code>{diag['width_pts']:.2f}</code> pts ({diag['width_L']:.2f} L)\n"
-            f"• Regime: <b>{diag['regime']}</b>\n"
-            f"• Recommended: <b>{proposal['options'][best_fit]['name']}</b>\n"
+            f"• Container: <code>{low:.2f} — {high:.2f}</code> (Δ <code>{delta_p:.2f}</code> pts)\n"
+            f"• Stops: <code>L0: {geom_nnq.sl_low:.2f} | L16: {geom_nnq.sl_high:.2f}</code>\n"
+            f"• Step (1/16): <code>{geom_nnq.s_step:.2f}</code> pts | Harvest (1/8): <code>{geom_nnq.s_harvest:.2f}</code> pts\n"
+            f"• Side Risk Budget: <b>${risk:,.2f}</b> | TF: <b>{tf}</b>\n\n"
+            f"🔍 <b>DYNAMIC BREAKER SNAP DIAGNOSIS</b>\n"
+            f"• Demand Breaker: <code>{d_brk['width_pts']:.2f}</code> pts ({d_brk['width_L']:.2f} L) — <b>{d_brk['regime']}</b>\n"
+            f"  └ Front: <code>{d_brk['front']:.2f}</code> | Back: <code>{d_brk['back']:.2f}</code>\n"
+            f"• Supply Breaker: <code>{s_brk['width_pts']:.2f}</code> pts ({s_brk['width_L']:.2f} L) — <b>{s_brk['regime']}</b>\n"
+            f"  └ Front: <code>{s_brk['front']:.2f}</code> | Back: <code>{s_brk['back']:.2f}</code>\n"
+            f"• Structural Fit: <b>{pkg_nnq['options'][diag['best_fit']]['name']}</b>\n\n"
+            f"🧠 <b>DECISION ENGINE STATE (SUGGESTION)</b>\n"
+            f"• Composite Score: <b>{s_composite:+.1f} / 100</b> (Raw: <code>{raw_score:+.1f}</code>)\n"
+            f"• Macro Context: <code>{macro_note}</code>\n"
+            f"• Suggested Directive: <code>{bias.get('directive', 'TWO_SIDED_BALANCED')}</code>\n\n"
+            f"📊 <b>SCORE DERIVATIVES &amp; WEIGHTS</b>\n"
+            f"• <b>Spatial (60%): {bias.get('s_spatial', 0):+.1f}</b> | CCR: <code>{bias.get('ccr', 0):+.3f}</code> | Corridor: <code>{bias.get('open_corridor', 0):.2f} pts</code>\n"
+            f"  └ RW Disc: <code>{bias.get('runway_disc', 0):.2f} pts</code> | RW Prem: <code>{bias.get('runway_prem', 0):.2f} pts</code> (Eq: <code>{p_eq:.2f}</code>)\n"
+            f"• <b>Chrono (20%): {bias.get('s_chrono', 0):+.1f}</b> | Recent: <code>{self.wizard['brk_dir']}</code> | Touches: <code>{self.wizard['brk_touches']}</code>\n"
+            f"  └ Formed: <code>{int(self.wizard['brk_age_mins'])}m ago</code> | Decay (λ): <code>{bias.get('lambda_decay', 0):.4f}</code> | Pen: <code>{touch_penalty_val:.2f}x</code>\n"
+            f"• <b>Price Action (20%): {bias.get('s_price_disp', 0):+.1f}</b> | P_now: <code>{bias.get('p_now', p_eq):.2f}</code> ({p_disp_label})"
+        )
+        self.send(msg_telemetry)
+
+        # -------------------------------------------------------------
+        # Message 2: Profiles & Discretionary Override Controls
+        # -------------------------------------------------------------
+        def fmt_snapped_option_block(opt_data: Dict[str, Any], budget: float) -> str:
+            risk_val = opt_data["total_catastrophic_risk"]
+            fit_icon = "✅" if risk_val <= budget else "⚠️"
+            fit_text = f"Under by ${budget - risk_val:.2f}" if risk_val <= budget else f"Over by ${risk_val - budget:.2f}"
+
+            long_rules = "\n".join([f"    • {r}" for r in opt_data["level_rules_long"]])
+            short_rules = "\n".join([f"    • {r}" for r in opt_data["level_rules_short"]])
+
+            return (
+                f"  🟢 <b>Long Quotes:</b>\n{long_rules}\n"
+                f"  🔴 <b>Short Quotes:</b>\n{short_rules}\n"
+                f"  • Total Side Risk: <b>${risk_val:.2f}</b> ({fit_icon} {fit_text})\n"
+            )
+
+        if opts_nnq["OPTION_B"]["total_catastrophic_risk"] <= risk and opts_nnq["OPTION_A"]["total_catastrophic_risk"] > risk:
+            rec_key = "OPTION_B"
+        elif opts_nnq["OPTION_C"]["total_catastrophic_risk"] <= risk and opts_nnq["OPTION_A"]["total_catastrophic_risk"] > risk:
+            rec_key = "OPTION_C"
+        else:
+            rec_key = diag["best_fit"]
+
+        msg_profiles = (
+            f"⚖️ <b>EXECUTION PROFILES — NNQ vs. MNQ</b>\n"
             f"───────────────────────────────────\n"
-            f"{'⭐' if best_fit == 'OPTION_A' else '🔘'} <b>OPTION A: {opt_a['name']}</b> {'(RECOMMENDED)' if best_fit == 'OPTION_A' else ''}\n"
-            f"• Active Rungs: <code>{', '.join(opt_a['rung_labels'])}</code>\n"
-            f"• Sizing: <code>{opt_a['ladder_qty']}</code> cts ({opt_a['total_contracts']} total)\n"
-            f"• EWR Target: <code>{opt_a['ewr_target_pct']}%</code> (${opt_a['r_target']:.2f}/rung) | Risk: <b>${opt_a['peak_risk']:.2f}</b>\n\n"
-            f"{'⭐' if best_fit == 'OPTION_B' else '🔘'} <b>OPTION B: {opt_b['name']}</b> {'(RECOMMENDED)' if best_fit == 'OPTION_B' else ''}\n"
-            f"• Active Rungs: <code>{', '.join(opt_b['rung_labels'])}</code>\n"
-            f"• Sizing: <code>{opt_b['ladder_qty']}</code> cts ({opt_b['total_contracts']} total)\n"
-            f"• EWR Target: <code>{opt_b['ewr_target_pct']}%</code> (${opt_b['r_target']:.2f}/rung) | Risk: <b>${opt_b['peak_risk']:.2f}</b>\n\n"
-            f"{'⭐' if best_fit == 'OPTION_C' else '🔘'} <b>OPTION C: {opt_c['name']}</b> {'(RECOMMENDED)' if best_fit == 'OPTION_C' else ''}\n"
-            f"• Active Rungs: <code>{', '.join(opt_c['rung_labels'])}</code>\n"
-            f"• Sizing: <code>{opt_c['ladder_qty']}</code> cts ({opt_c['total_contracts']} total)\n"
-            f"• EWR Target: <code>{opt_c['ewr_target_pct']}%</code> (${opt_c['r_target']:.2f}/rung) | Risk: <b>${opt_c['peak_risk']:.2f}</b>\n"
+            f"🟢 <b>NNQ (E-nano — $0.20/pt | Tick: 0.50)</b>\n\n"
+            f"{'⭐' if rec_key == 'OPTION_B' else '🔘'} <b>Option B: {opts_nnq['OPTION_B']['name']}</b> {'(RECOMMENDED — FITS BUDGET)' if rec_key == 'OPTION_B' else ''}\n"
+            f"{fmt_snapped_option_block(opts_nnq['OPTION_B'], risk)}\n"
+            f"{'⭐' if rec_key == 'OPTION_C' else '🔘'} <b>Option C: {opts_nnq['OPTION_C']['name']}</b> {'(RECOMMENDED)' if rec_key == 'OPTION_C' else ''}\n"
+            f"{fmt_snapped_option_block(opts_nnq['OPTION_C'], risk)}\n"
+            f"{'⭐' if rec_key == 'OPTION_A' else '🔘'} <b>Option A: {opts_nnq['OPTION_A']['name']}</b> {'(RECOMMENDED)' if rec_key == 'OPTION_A' else ''}\n"
+            f"{fmt_snapped_option_block(opts_nnq['OPTION_A'], risk)}"
             f"───────────────────────────────────\n"
-            f"Tap an execution profile below to arm orders:"
+            f"🟡 <b>MNQ (Micro — $2.00/pt | Tick: 0.25)</b>\n"
+            f"• Option B Risk: <b>${opts_mnq['OPTION_B']['total_catastrophic_risk']:.2f}</b> (⚠️ Over by ${opts_mnq['OPTION_B']['total_catastrophic_risk'] - risk:.2f})\n"
+            f"───────────────────────────────────\n"
+            f"<b>ARM OR OVERRIDE DIRECTIVE:</b>"
         )
 
         buttons = [
-            [(f"✅ Arm Best Fit ({proposal['options'][best_fit]['name'].split()[0]})", f"arm:{pid}:{best_fit}")],
-            [("🔘 Option B (1/8 Backbone)", f"arm:{pid}:OPTION_B"), ("🔘 Option C (Compact Core)", f"arm:{pid}:OPTION_C")],
-            [("❌ Dismiss Proposal", f"dismiss:{pid}")]
+            [(f"🚀 Arm NNQ Option B (${opts_nnq['OPTION_B']['total_catastrophic_risk']:.0f} Risk)", f"arm:NNQ_{pid}:OPTION_B")],
+            [(f"🔘 NNQ Option C (${opts_nnq['OPTION_C']['total_catastrophic_risk']:.0f})", f"arm:NNQ_{pid}:OPTION_C"),
+             (f"🔘 NNQ Option A (${opts_nnq['OPTION_A']['total_catastrophic_risk']:.0f})", f"arm:NNQ_{pid}:OPTION_A")],
+            [("🐻 Override: Shorts Only (Fade Rallies)", f"override_mode:SHORTS_ONLY:{pid}"),
+             ("⚖️ Force Two-Sided Balanced", f"override_mode:BALANCED:{pid}")],
+            [("🔄 Start Over", "prompt:range"), ("💵 Change Risk", "prompt:risk")],
+            [("❌ Dismiss", f"dismiss:{pid}")]
         ]
 
-        self.send(msg, buttons=buttons)
+        self.send(msg_profiles, buttons=buttons)
 
     def start_polling(self):
         if not self.api_url or not self.chat_id:
@@ -139,36 +354,115 @@ class TelegramBridge:
                         self.last_update_id = update["update_id"]
                         self._process_update(update)
             except Exception:
-                time.sleep(2)
+                time.sleep(1)
 
     def _process_update(self, update: Dict[str, Any]):
         if "callback_query" in update:
             cb = update["callback_query"]
             data = cb.get("data", "")
+            cb_id = cb.get("id", "")
             msg_id = cb.get("message", {}).get("message_id")
+            self.answer_callback(cb_id)
+
+            if data == "wizcancel":
+                self.wizard["state"] = "IDLE"
+                if msg_id:
+                    self.edit_message(msg_id, "❌ <b>Setup Cancelled.</b>")
+                return
+
+            if data.startswith("setmacro:"):
+                macro = data.split(":")[1]
+                self.wizard["macro_bias"] = macro
+                self.prompt_step2_breaker_edges()
+                return
+
+            if data.startswith("override_mode:"):
+                parts = data.split(":")
+                mode, pid = parts[1], parts[2]
+                self.wizard["execution_mode"] = mode
+                if mode == "SHORTS_ONLY":
+                    self.send(f"🐻 <b>OVERRIDE APPLIED: SHORTS ONLY</b>\n• Long bids will be disarmed.\n• Only selling rallies into supply.")
+                elif mode == "BALANCED":
+                    self.send(f"⚖️ <b>OVERRIDE APPLIED: BALANCED TWO-SIDED</b>\n• Both Long and Short rungs active at full standard allocation.")
+                return
+
+            if data.startswith("setwiztf:"):
+                tf = data.split(":")[1]
+                self.wizard["tf"] = tf
+                self.send(f"⏱️ Timeframe set to <b>{tf}</b>.\nNow reply with range prices:\n👉 <code>27641.50 28526.00</code>")
+                return
+
+            if data.startswith("setwizrisk:"):
+                new_r = float(data.split(":")[1])
+                self.wizard["risk"] = new_r
+                self.send(f"💵 Side risk budget set to <b>${new_r:,.2f}</b>.\nNow reply with range prices:\n👉 <code>27641.50 28526.00</code>")
+                return
+
+            if data == "use_geom_breakers":
+                delta_p = self.wizard["high"] - self.wizard["low"]
+                self.wizard["brk_low_front"] = round(self.wizard["low"] + 0.3125 * delta_p, 2)
+                self.wizard["brk_low_back"] = round(self.wizard["low"] + 0.1875 * delta_p, 2)
+                self.wizard["brk_high_front"] = round(self.wizard["low"] + 0.6875 * delta_p, 2)
+                self.wizard["brk_high_back"] = round(self.wizard["low"] + 0.8125 * delta_p, 2)
+                self.prompt_step3_breaker_direction()
+                return
+
+            if data.startswith("setdir:"):
+                d = data.split(":")[1]
+                self.wizard["brk_dir"] = d
+                self.prompt_step4_touches_and_age()
+                return
+
+            if data.startswith("settouches:"):
+                t = int(data.split(":")[1])
+                self.wizard["brk_touches"] = t
+                self.prompt_user_entered_age()
+                return
+
+            if data == "prompt:range":
+                self.prompt_step1_range()
+                return
+
+            if data == "prompt:risk":
+                msg = "💵 <b>Select Side Catastrophic Risk Budget:</b>"
+                btns = [
+                    [("💵 $150", "setwizrisk:150"), ("💵 $200 (Default)", "setwizrisk:200"), ("💵 $300", "setwizrisk:300")]
+                ]
+                self.send(msg, buttons=btns)
+                return
 
             if data.startswith("dismiss:"):
                 pid = data.split(":")[1]
-                self.pending_proposals.pop(pid, None)
+                self.pending_proposals.pop(f"NNQ_{pid}", None)
+                self.pending_proposals.pop(f"MNQ_{pid}", None)
                 if msg_id:
                     self.edit_message(msg_id, "🗑️ <b>Grid Proposal Dismissed.</b>")
                 return
 
             if data.startswith("arm:"):
                 parts = data.split(":")
-                pid = parts[1]
+                full_pid = parts[1]
                 opt_key = parts[2]
-                proposal = self.pending_proposals.get(pid)
+                proposal = self.pending_proposals.get(full_pid)
                 if proposal:
                     opt = proposal["options"][opt_key]
+                    inst = proposal["instrument"]
+                    mode = self.wizard.get("execution_mode", "BALANCED")
+                    
+                    if mode == "SHORTS_ONLY":
+                        status_line = "🔴 <b>SHORT-ONLY OVERRIDE ACTIVE (Longs Disarmed)</b>"
+                    else:
+                        status_line = "🟢 <b>TWO-SIDED BALANCED ACTIVE</b>"
+
                     if msg_id:
                         self.edit_message(
                             msg_id,
-                            f"🚀 <b>GRID ARMED &amp; QUOTING ACTIVE!</b>\n\n"
+                            f"🚀 <b>{inst} GRID ARMED!</b>\n\n"
+                            f"• Contract: <b>{inst}</b>\n"
                             f"• Profile: <b>{opt['name']}</b>\n"
-                            f"• Active Rungs: <code>{', '.join(opt['rung_labels'])}</code>\n"
-                            f"• Ladder Sizing: <code>{opt['ladder_qty']}</code> cts\n"
-                            f"• Side Risk Allocated: <b>${opt['peak_risk']:.2f}</b>"
+                            f"• Execution Directive: {status_line}\n"
+                            f"• Total Side Catastrophic Risk: <b>${opt['total_catastrophic_risk']:.2f}</b>\n\n"
+                            f"<i>In-flight control active: Use /disarmlongs, /disarmshorts, or /twosided anytime.</i>"
                         )
                 if self.command_handler:
                     self.command_handler(data, proposal)
@@ -180,5 +474,65 @@ class TelegramBridge:
 
         if "message" in update and "text" in update["message"]:
             text = update["message"]["text"].strip()
+            print(f"📩 [Telegram Text]: {text}")
+
+            if self.wizard["state"] == "AWAITING_AGE":
+                try:
+                    mins = float(text)
+                    self.wizard["brk_age_mins"] = max(1.0, mins)
+                    self.wizard["state"] = "IDLE"
+                    self.send(
+                        f"✅ <b>Breaker formed {int(mins)} minutes ago recorded.</b>\n"
+                        f"⚡ <i>Generating Review with structural recommendations &amp; override options...</i>"
+                    )
+                    self.send_dual_review_card()
+                    return
+                except ValueError:
+                    self.send("⚠️ Please reply with a number for breaker age in minutes (e.g. <code>15</code> or <code>30</code>).")
+                    return
+
+            if self.wizard["state"] == "AWAITING_BREAKERS":
+                parts = text.replace(",", " ").split()
+                if len(parts) >= 4:
+                    try:
+                        self.wizard["brk_low_front"] = float(parts[0])
+                        self.wizard["brk_low_back"] = float(parts[1])
+                        self.wizard["brk_high_front"] = float(parts[2])
+                        self.wizard["brk_high_back"] = float(parts[3])
+                        self.send("✅ Breaker coordinates recorded!")
+                        self.prompt_step3_breaker_direction()
+                        return
+                    except ValueError:
+                        self.send("⚠️ Error parsing breaker prices. Reply with 4 prices separated by spaces.")
+                        return
+
+            if text.startswith("/newrange") or text.startswith("/propose"):
+                parts = text.split()
+                if len(parts) >= 3:
+                    try:
+                        p1, p2 = float(parts[1]), float(parts[2])
+                        self.wizard["low"], self.wizard["high"] = min(p1, p2), max(p1, p2)
+                        if len(parts) > 3:
+                            self.wizard["risk"] = float(parts[3])
+                        if len(parts) > 4:
+                            self.wizard["tf"] = parts[4]
+                        self.prompt_step2_breaker_edges()
+                        return
+                    except Exception as e:
+                        self.send(f"⚠️ Error parsing values: {e}")
+                else:
+                    self.prompt_step1_range()
+                    return
+
+            parts = text.replace(",", " ").split()
+            if len(parts) == 2:
+                try:
+                    p1, p2 = float(parts[0]), float(parts[1])
+                    self.wizard["low"], self.wizard["high"] = min(p1, p2), max(p1, p2)
+                    self.prompt_step2_breaker_edges()
+                    return
+                except ValueError:
+                    pass
+
             if self.command_handler:
                 self.command_handler(text, None)
