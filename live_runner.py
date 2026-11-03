@@ -15,7 +15,15 @@ from src.core.directional_bias import DirectionalBiasCalculator
 load_dotenv()
 
 TF_LIFECYCLE = {
-    "15m": {"max_s": 14400, "freeze_buffer_s": 2700},
+    "1hr": {"max_s": 43200, "freeze_buffer_s": 5400},  # 12 hrs max, 90m freeze
+    "1h":  {"max_s": 43200, "freeze_buffer_s": 5400},  # 12 hrs max, 90m freeze
+    "15m": {"max_s": 21600, "freeze_buffer_s": 3600},  # 6 hrs max, 60m freeze
+    "5m":  {"max_s": 14400, "freeze_buffer_s": 2700},  # 4 hrs max, 45m freeze
+    "1m":  {"max_s": 7200,  "freeze_buffer_s": 1200},  # 2 hrs max, 20m freeze
+    "15s": {"max_s": 1200,  "freeze_buffer_s": 180},   # 20 min max, 3m freeze
+    "5s":  {"max_s": 1200,  "freeze_buffer_s": 180},   # 20 min max, 3m freeze
+    "1s":  {"max_s": 300,   "freeze_buffer_s": 45},    # 5 min max, 45s freeze
+},
     "5m":  {"max_s": 10800, "freeze_buffer_s": 1800},
     "1m":  {"max_s": 5400,  "freeze_buffer_s": 900},
     "15s": {"max_s": 1200,  "freeze_buffer_s": 180},
