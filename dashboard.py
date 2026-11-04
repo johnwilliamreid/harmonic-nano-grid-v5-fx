@@ -14,6 +14,41 @@ _PENDING_CARDS: Dict[str, Any] = {}
 _ON_ARM_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
 _ON_PROPOSE_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
 
+
+def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_high_front, brk_high_back):
+    f_low_px = brk_low_front or (low + 0.3125 * (high - low))
+    b_low_px = brk_low_back or low
+    f_high_px = brk_high_front or (high - 0.3125 * (high - low))
+    b_high_px = brk_high_back or high
+
+    d_front = max(1, min(7, int(round((f_low_px - geom.range_low) / geom.s_step))))
+    d_mt = max(1, min(d_front - 1, int(round(((b_low_px + 0.5 * (f_low_px - b_low_px)) - geom.range_low) / geom.s_step))))
+
+    s_front = max(9, min(15, int(round((f_high_px - geom.range_low) / geom.s_step))))
+    s_mt = max(s_front + 1, min(15, int(round(((f_high_px + 0.5 * (b_high_px - f_high_px)) - geom.range_low) / geom.s_step))))
+
+    d_rungs = sorted(list(set([d_front, d_mt] + list(range(d_mt + 1, d_front)))))
+    s_rungs = sorted(list(set([s_front, s_mt] + list(range(s_front + 1, s_mt)))))
+
+    return {
+        "SNAPPED": {
+            "name": "Breaker Snapped (Mitigation Priority)",
+            "discount_rungs": d_rungs,
+            "premium_rungs": s_rungs
+        },
+        "LEAN_2_RUNG": {
+            "name": "Lean Mitigation Core",
+            "discount_rungs": [d_front, d_mt],
+            "premium_rungs": [s_front, s_mt]
+        }
+    }
+
+_ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
+
+def set_flatten_callback(cb: Callable[[], None]):
+    global _ON_FLATTEN_CALLBACK
+    _ON_FLATTEN_CALLBACK = cb
+
 def set_arm_callback(cb: Callable[[Dict[str, Any]], None]):
     global _ON_ARM_CALLBACK
     _ON_ARM_CALLBACK = cb
@@ -444,6 +479,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button id="toggle-mnq" class="btn" style="padding:4px 8px; font-size:11px; background:transparent; color:var(--text-muted);" onclick="switchActiveInstrument('MNQ')">MNQ</button>
     </div>
     <button class="btn btn-primary" onclick="toggleRangeForm()">📐 Enter New Range</button>
+    <button class="btn btn-cancel" style="font-weight:800; border:1px solid rgba(244,63,94,0.5); background:rgba(244,63,94,0.25);" onclick="triggerEmergencyFlatten()">🚨 FLATTEN</button>
     <span id="badge-venue" class="badge badge-demo">PAPER DEMO</span>
     <span id="badge-status" class="badge badge-status-active">ARMED & QUOTING</span>
   </div>
@@ -649,7 +685,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="card glass matrix-card">
       <div class="matrix-header">
         <div class="card-title" style="margin-bottom: 2px;">
-          <span style="font-size: 12px; color: var(--text);">Master 16-Step Matrix (L0 – L16)</span>
+          <span style="font-size: 12px; color: var(--text);">Master 16-Step Matrix (L16 – L0)</span>
           <span style="color:var(--text-muted); font-size:11px;" class="mono">Snapped to 0.25 CME Tick Precision</span>
         </div>
       </div>
@@ -836,7 +872,6 @@ function recalcGeometryPreview() {
 }
 
 async function submitNewRange() {
-  saveFormValues();
   const instrument = document.getElementById('inp-instrument')?.value || 'NNQ';
   const low = parseFloat(document.getElementById('inp-low').value);
   const high = parseFloat(document.getElementById('inp-high').value);
@@ -848,15 +883,42 @@ async function submitNewRange() {
   const elapsed_m = parseInt(document.getElementById('inp-elapsed-m').value) || 18;
 
   if (isNaN(low) || isNaN(high) || low >= high) {
-    alert("Please enter a valid container where Low is strictly less than High.");
+    alert("❌ Invalid Container: High price must be strictly greater than Low price.");
     return;
   }
 
   const span = high - low;
-  const df = parseFloat(document.getElementById('inp-df').value) || (low + span * 0.3125);
-  const db = parseFloat(document.getElementById('inp-db').value) || low;
-  const sf = parseFloat(document.getElementById('inp-sf').value) || (high - span * 0.3125);
-  const sb = parseFloat(document.getElementById('inp-sb').value) || high;
+  const pEq = low + 0.5 * span;
+
+  const rawDf = document.getElementById('inp-df').value;
+  const rawDb = document.getElementById('inp-db').value;
+  const rawSf = document.getElementById('inp-sf').value;
+  const rawSb = document.getElementById('inp-sb').value;
+
+  const df = rawDf ? parseFloat(rawDf) : (low + span * 0.3125);
+  const db = rawDb ? parseFloat(rawDb) : low;
+  const sf = rawSf ? parseFloat(rawSf) : (high - span * 0.3125);
+  const sb = rawSb ? parseFloat(rawSb) : high;
+
+  // Strict Structural Boundary Checks
+  if (df <= low || df >= pEq) {
+    alert(`❌ Invalid Demand Front (${df.toFixed(2)}):\nMust sit strictly inside the discount half between Low (${low.toFixed(2)}) and Eq (${pEq.toFixed(2)}).\n\nTap "⚡ Auto 3/8 & 5/8" to auto-align or adjust your level.`);
+    return;
+  }
+  if (db < low || db > df) {
+    alert(`❌ Invalid Demand Back (${db.toFixed(2)}):\nMust sit between Low (${low.toFixed(2)}) and Demand Front (${df.toFixed(2)}).`);
+    return;
+  }
+  if (sf <= pEq || sf >= high) {
+    alert(`❌ Invalid Supply Front (${sf.toFixed(2)}):\nMust sit strictly inside the premium half between Eq (${pEq.toFixed(2)}) and High (${high.toFixed(2)}).\n\nTap "⚡ Auto 3/8 & 5/8" to auto-align or adjust your level.`);
+    return;
+  }
+  if (sb > high || sb < sf) {
+    alert(`❌ Invalid Supply Back (${sb.toFixed(2)}):\nMust sit between Supply Front (${sf.toFixed(2)}) and High (${high.toFixed(2)}).`);
+    return;
+  }
+
+  saveFormValues();
 
   const payload = {
     instrument: instrument,
@@ -883,6 +945,8 @@ async function submitNewRange() {
     const d = await res.json();
     if (d.ok) {
       document.getElementById('range-entry-drawer').style.display = 'none';
+    } else {
+      alert("❌ Range Rejected: " + (d.error || "Invalid parameters"));
     }
   } catch(e) {
     alert("Error submitting new range: " + e);
@@ -905,6 +969,25 @@ function getStatusBadge(st) {
   if (u.includes('ACTIVE') || u.includes('RESTING') || u.includes('ARMED')) return `<span class="status-tag st-active">${st}</span>`;
   if (u.includes('INVAL')) return `<span class="status-tag st-inval">${st}</span>`;
   return `<span class="status-tag st-exit">${st}</span>`;
+}
+
+
+async function triggerEmergencyFlatten() {
+  const confirmed = confirm("⚠️ EMERGENCY OVERRIDE: Are you sure you want to cancel all working orders and FLATTEN open positions at market?");
+  if (!confirmed) return;
+  try {
+    const res = await fetch('/api/flatten', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: 'WEB_DASHBOARD' })
+    });
+    const d = await res.json();
+    if (d.ok) {
+      alert("🚨 Emergency flatten executed. Orders canceled and positions liquidated.");
+    }
+  } catch(e) {
+    alert("❌ Flatten request failed: " + e);
+  }
 }
 
 async function submitProposalChoice(choice) {
@@ -1118,8 +1201,9 @@ async function refreshTelemetry() {
     tElem.textContent = `${tot >= 0 ? '+' : ''}$${tot.toFixed(2)}`;
     tElem.style.color = tot >= 0 ? 'var(--bull)' : 'var(--bear)';
 
-    // Matrix Table
-    const grid = d.grid || [];
+    // Matrix Table (Inverted DOM order: L16 -> L0)
+    const rawGrid = d.grid || [];
+    const grid = [...rawGrid].sort((a, b) => b.index - a.index);
     const tbody = document.getElementById('grid-tbody');
     tbody.innerHTML = '';
 
@@ -1228,88 +1312,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
         data = json.loads(body) if body else {}
 
+        if self.path == "/api/flatten":
+            log_telegram_message("IN", "🚨 <b>EMERGENCY FLATTEN INITIATED FROM DASHBOARD</b>")
+            if _ON_FLATTEN_CALLBACK:
+                _ON_FLATTEN_CALLBACK()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+            return
+
         if self.path == "/api/arm":
             mode = data.get("mode", "SNAPPED")
             posture = data.get("posture", "DIRECTIVE")
-            setup = _TELEMETRY.get("pending_setup", {})
-            bias_directive = _TELEMETRY.get("bias", {}).get("directive", "TWO_SIDED_BALANCED")
-
-            if setup and mode != "CANCEL" and _PENDING_GEOM is not None:
-                geom = _PENDING_GEOM
-                card = _PENDING_CARDS.get(mode, {})
-                disc_rungs = card.get("disc", [5, 6, 3])
-                prem_rungs = card.get("prem", [10, 11, 13])
-
-                grid_dict = geom.generate_grid(
-                    active_discount_rungs=disc_rungs,
-                    active_premium_rungs=prem_rungs,
-                    brk_low_back=setup["brk_low_back"],
-                    brk_low_front=setup["brk_low_front"],
-                    brk_high_front=setup["brk_high_front"],
-                    brk_high_back=setup["brk_high_back"]
-                )
-
-                grid_list = []
-                for idx in sorted(grid_dict.keys()):
-                    r = grid_dict[idx]
-                    geo_p = round_to_tick(geom.range_low + idx * geom.s_step)
-                    
-                    contracts = r.get("contracts", 0)
-                    status = "ARMED_RESTING" if contracts > 0 else "STANDBY"
-                    if r["side"] == "MID":
-                        status = "MEDIAN_ANCHOR"
-
-                    if posture == "DIRECTIVE":
-                        if "DISARM_SHORTS" in bias_directive and r["side"] == "SHORT":
-                            contracts = 0
-                            status = "DISARMED_BY_BIAS"
-                        elif "DISARM_LONGS" in bias_directive and r["side"] == "LONG":
-                            contracts = 0
-                            status = "DISARMED_BY_BIAS"
-
-                    cap = r.get("cap", 4)
-                    if "QUARTILE" in r["role"]:
-                        cap = 1
-
-                    risk_dlr = round(r.get("risk_dollar", 0.0), 2) if contracts > 0 else 0.0
-                    rew_dlr = round(r.get("reward_dollar", 0.0), 2) if contracts > 0 else 0.0
-
-                    grid_list.append({
-                        "index": idx,
-                        "side": r["side"],
-                        "role": r["role"],
-                        "price": r["price"],
-                        "geo_price": geo_p,
-                        "snap_delta": round(r["price"] - geo_p, 2),
-                        "tp": r["tp"],
-                        "contracts": contracts,
-                        "risk_dollar": risk_dlr,
-                        "reward_dollar": rew_dlr,
-                        "rr_ratio": round(r.get("rr_ratio", 2.2), 2),
-                        "rotations": r.get("rotations", 0),
-                        "cap": cap,
-                        "booked_pnl": 0.0,
-                        "floating_pnl": 0.0,
-                        "status": status
-                    })
-
-                _TELEMETRY["instrument"] = setup.get("instrument", _TELEMETRY.get("instrument", "NNQ"))
-                _TELEMETRY["container"] = {
-                    "low": geom.range_low,
-                    "high": geom.range_high,
-                    "delta_p": round(geom.range_high - geom.range_low, 2),
-                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 2),
-                    "s_step": geom.s_step,
-                    "s_harvest": geom.s_harvest
-                }
-                _TELEMETRY["lifecycle"]["tf"] = setup["tf"]
-                _TELEMETRY["grid"] = grid_list
-                _TELEMETRY["live_price"] = round((geom.range_low + geom.range_high) / 2.0, 2)
-
-                num_armed = sum(1 for r in grid_list if r["contracts"] > 0)
-                log_telegram_message("IN", f"User armed structure: <b>{mode}</b> | Posture: <b>{posture}</b>")
-                log_telegram_message("OUT", f"🚀 <b>ARMED &amp; QUOTING</b>: {mode} ({num_armed} resting rungs quoted, posture={posture})")
-
             if "staged_proposal" in _TELEMETRY:
                 _TELEMETRY["staged_proposal"]["active"] = False
 
@@ -1387,12 +1403,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             }
 
             opts = proposal.get("options", {})
+            dyn_custom = derive_asymmetric_rungs(geom, low, high, df, db, sf, sb)
             profile_defs = [
                 ("OPTION_A", "6-Level Balanced", opts.get("OPTION_A", {}).get("discount_rungs", [2,3,4,5,6,7]), opts.get("OPTION_A", {}).get("premium_rungs", [9,10,11,12,13,14])),
                 ("OPTION_B", "Conservative Backbone (3-Rung)", opts.get("OPTION_B", {}).get("discount_rungs", [2,4,6]), opts.get("OPTION_B", {}).get("premium_rungs", [10,12,14])),
                 ("OPTION_C", "Structural Core (4-Rung)", opts.get("OPTION_C", {}).get("discount_rungs", [3,4,6,7]), opts.get("OPTION_C", {}).get("premium_rungs", [9,10,12,13])),
-                ("SNAPPED", "Breaker Snapped (Mitigation Priority)", [5, 6, 3], [10, 11, 13]),
-                ("LEAN_2_RUNG", "Lean Mitigation Core (L5/L6)", [5, 6], [10, 11])
+                ("SNAPPED", "Breaker Snapped (Mitigation Priority)", dyn_custom["SNAPPED"]["discount_rungs"], dyn_custom["SNAPPED"]["premium_rungs"]),
+                ("LEAN_2_RUNG", "Lean Mitigation Core", dyn_custom["LEAN_2_RUNG"]["discount_rungs"], dyn_custom["LEAN_2_RUNG"]["premium_rungs"])
             ]
 
             calc_cards = []

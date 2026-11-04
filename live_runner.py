@@ -1,4 +1,6 @@
-from dashboard import start_dashboard_server, update_telemetry
+from dashboard import start_dashboard_server, update_telemetry, set_arm_callback, set_flatten_callback
+import dashboard
+import dashboard
 import json
 import os
 import sys
@@ -31,22 +33,67 @@ def format_hms(seconds: float) -> str:
     s = max(0, int(seconds))
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
+
+def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_high_front, brk_high_back):
+    f_low_px = brk_low_front or (low + 0.3125 * (high - low))
+    b_low_px = brk_low_back or low
+    f_high_px = brk_high_front or (high - 0.3125 * (high - low))
+    b_high_px = brk_high_back or high
+
+    d_front = max(1, min(7, int(round((f_low_px - geom.range_low) / geom.s_step))))
+    d_mt = max(1, min(d_front - 1, int(round(((b_low_px + 0.5 * (f_low_px - b_low_px)) - geom.range_low) / geom.s_step))))
+
+    s_front = max(9, min(15, int(round((f_high_px - geom.range_low) / geom.s_step))))
+    s_mt = max(s_front + 1, min(15, int(round(((f_high_px + 0.5 * (b_high_px - f_high_px)) - geom.range_low) / geom.s_step))))
+
+    # Demand rungs: Front, MT, plus any intermediate absorption rungs
+    d_rungs = [d_front, d_mt]
+    for mid in range(d_mt + 1, d_front):
+        d_rungs.append(mid)
+    d_rungs = sorted(list(set(d_rungs)))
+
+    # Supply rungs: Front, MT, plus any intermediate absorption rungs
+    s_rungs = [s_front, s_mt]
+    for mid in range(s_front + 1, s_mt):
+        s_rungs.append(mid)
+    s_rungs = sorted(list(set(s_rungs)))
+
+    return {
+        "SNAPPED": {
+            "name": "Breaker Snapped (Mitigation Priority)",
+            "discount_rungs": d_rungs,
+            "premium_rungs": s_rungs
+        },
+        "LEAN_2_RUNG": {
+            "name": "Lean Mitigation Core",
+            "discount_rungs": [d_front, d_mt],
+            "premium_rungs": [s_front, s_mt]
+        }
+    }
+
 def run_live_session(args):
     mult = MULTIPLIERS.get(args.instrument, 2.0)
     fee = COMMISSION_PER_RT.get(args.instrument, 1.94)
 
+    has_init_range = (args.low is not None and args.high is not None and args.high > args.low)
+    init_low = args.low if has_init_range else 27000.00
+    init_high = args.high if has_init_range else 28000.00
+
     print("=" * 70)
     print("🚀 HARMONIC NANO-GRID V4 EXECUTION RUNNER")
     print(f"Asset: {args.instrument} | Multiplier: ${mult}/pt | Fee: ${fee}/RT")
-    print(f"Container: {args.low:.2f} - {args.high:.2f} (Δ {args.high - args.low:.2f} pts)")
+    if has_init_range:
+        print(f"Container: {args.low:.2f} - {args.high:.2f} (Δ {args.high - args.low:.2f} pts)")
+    else:
+        print("Container: STANDBY (Awaiting Range Definition via Cockpit/Telegram)")
     print(f"Source: {args.source.upper()} | Execution: {'🚨 LIVE REALMONEY' if args.live_exec else '🛡️ PAPER DEMO (51428111)'}")
     print(f"Timeframe: {args.tf} | Directional Breakers: {'YES' if args.brk_low_front else 'GEOMETRIC DEFAULT'}")
     print("=" * 70)
 
     # 1. Initialize Grid Geometry & Generate Proposal
     geom = HarmonicGridGeometry(
-        range_low=args.low,
-        range_high=args.high,
+        range_low=init_low,
+        range_high=init_high,
         resolution=16,
         multiplier=mult,
         fee_per_rt=fee,
@@ -60,8 +107,20 @@ def run_live_session(args):
         brk_high_front=args.brk_high_front,
         brk_high_back=args.brk_high_back
     )
-    best_fit = proposal["diagnosis"]["best_fit"]
-    active_profile = proposal["options"][best_fit]
+    custom_profiles = derive_asymmetric_rungs(
+        geom, init_low, init_high,
+        args.brk_low_front, args.brk_low_back,
+        args.brk_high_front, args.brk_high_back
+    )
+
+    startup_mode = getattr(args, "profile", "SNAPPED")
+    if startup_mode in custom_profiles:
+        active_profile = custom_profiles[startup_mode]
+    elif startup_mode in proposal.get("options", {}):
+        active_profile = proposal["options"][startup_mode]
+    else:
+        best_fit = proposal["diagnosis"]["best_fit"]
+        active_profile = proposal["options"][best_fit]
 
     grid_dict = geom.generate_grid(
         active_discount_rungs=active_profile["discount_rungs"],
@@ -76,11 +135,13 @@ def run_live_session(args):
 
     # 2. Compute Initial Directional Bias
     bias_calc = DirectionalBiasCalculator(default_timeframe=args.tf)
+    b_low = args.brk_low_front or (init_low + 0.3125 * (init_high - init_low))
+    b_high = args.brk_high_front or (init_low + 0.6875 * (init_high - init_low))
     bias_data = bias_calc.compute_bias(
-        range_low=args.low,
-        range_high=args.high,
-        breaker_low_front=args.brk_low_front or (args.low + 0.3125 * (args.high - args.low)),
-        breaker_high_front=args.brk_high_front or (args.low + 0.6875 * (args.high - args.low)),
+        range_low=init_low,
+        range_high=init_high,
+        breaker_low_front=b_low,
+        breaker_high_front=b_high,
         last_breaker_dir=args.brk_dir,
         elapsed_seconds=args.brk_age,
         mitigation_touches=args.brk_touches,
@@ -92,7 +153,7 @@ def run_live_session(args):
     grid_list = []
     for idx in sorted(grid_dict.keys()):
         r = grid_dict[idx]
-        geo_p = round(args.low + idx * geom.s_step, 2)
+        geo_p = round(geom.range_low + idx * geom.s_step, 2)
         snap_delta = round(r["price"] - geo_p, 2)
         item = {
             "index": idx,
@@ -117,6 +178,10 @@ def run_live_session(args):
             "entry_boid": None,
             "tp_boid": None,
             "sl_boid": None,
+            "fill_price": None,
+            "fill_qty": 0,
+            "booked_pnl": 0.0,
+            "floating_pnl": 0.0,
             "status": "IDLE" if r["side"] != "MID" and r["cap"] > 0 else "EXIT_ONLY"
         }
         grid_by_idx[idx] = item
@@ -144,7 +209,7 @@ def run_live_session(args):
 
             print("[Runner] ⏳ Awaiting first CME quote...")
             for _ in range(15):
-                if hasattr(broker, "last_price") and broker.last_price > 0:
+                if hasattr(broker, "last_price") and broker.last_price is not None and broker.last_price > 0:
                     break
                 if hasattr(broker, "_ref_price"):
                     ref = broker._ref_price(args.instrument)
@@ -163,10 +228,10 @@ def run_live_session(args):
     tf_rule = TF_LIFECYCLE.get(args.tf, TF_LIFECYCLE["15m"])
     max_duration = tf_rule["max_s"]
     freeze_at = max_duration - tf_rule["freeze_buffer_s"]
-    p_eq = args.low + 0.5 * (args.high - args.low)
+    p_eq = init_low + 0.5 * (init_high - init_low)
 
     state = {
-        "status": "AWAITING_ARM" if getattr(args, "wait_arm", False) else "ACTIVE_QUOTING",
+        "status": ("AWAITING_ARM" if getattr(args, "wait_arm", False) else "ACTIVE_QUOTING") if has_init_range else "AWAITING_RANGE",
         "paused": False,
         "flatten": False,
         "last_price": getattr(broker, "last_price", p_eq) if broker else p_eq,
@@ -182,7 +247,7 @@ def run_live_session(args):
 
     def get_fresh_market_price() -> float:
         if broker:
-            if hasattr(broker, "last_price") and broker.last_price > 0:
+            if hasattr(broker, "last_price") and broker.last_price is not None and broker.last_price > 0:
                 return broker.last_price
             if hasattr(broker, "_ref_price"):
                 ref = broker._ref_price(args.instrument)
@@ -200,11 +265,35 @@ def run_live_session(args):
             return price >= (market_price + 0.50)
         return False
 
-    def rearm_profile(opt_key: str):
+    def rearm_profile(opt_key: str, force: bool = False, brk_low_front=None, brk_low_back=None, brk_high_front=None, brk_high_back=None):
         nonlocal active_profile, grid_dict, grid_by_idx
-        if opt_key not in proposal["options"]:
+
+        # If already on this profile and not forced, ignore redundant re-arm
+        current_name = state.get("active_profile_name")
+        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C"):
+            if current_name and (opt_key in current_name or (opt_key == "SNAPPED" and "Mitigation Priority" in current_name)):
+                print(f"[RE-ARM GUARD] Grid already armed with {current_name}. Skipping redundant order cycling.")
+                return True
+
+        # Use active container boundaries from geom
+        cur_low = geom.range_low
+        cur_high = geom.range_high
+        b_lf = brk_low_front if brk_low_front is not None else args.brk_low_front
+        b_lb = brk_low_back if brk_low_back is not None else args.brk_low_back
+        b_hf = brk_high_front if brk_high_front is not None else args.brk_high_front
+        b_hb = brk_high_back if brk_high_back is not None else args.brk_high_back
+
+        custom_profiles = derive_asymmetric_rungs(
+            geom, cur_low, cur_high,
+            b_lf, b_lb, b_hf, b_hb
+        )
+        if opt_key in proposal.get("options", {}):
+            opt = proposal["options"][opt_key]
+        elif opt_key in custom_profiles:
+            opt = custom_profiles[opt_key]
+        else:
+            print(f"[RE-ARM ERROR] Unknown profile: {opt_key}")
             return False
-        opt = proposal["options"][opt_key]
         active_profile = opt
         state["active_profile_name"] = opt["name"]
 
@@ -219,11 +308,11 @@ def run_live_session(args):
         new_grid = geom.generate_grid(
             active_discount_rungs=opt["discount_rungs"],
             active_premium_rungs=opt["premium_rungs"],
-            brk_low_back=args.brk_low_back or args.low,
-            brk_low_front=args.brk_low_front,
+            brk_low_back=b_lb or cur_low,
+            brk_low_front=b_lf,
             brk_low_poc=args.brk_low_poc,
-            brk_high_front=args.brk_high_front,
-            brk_high_back=args.brk_high_back or args.high,
+            brk_high_front=b_hf,
+            brk_high_back=b_hb or cur_high,
             brk_high_poc=args.brk_high_poc
         )
 
@@ -237,6 +326,8 @@ def run_live_session(args):
                 grid_by_idx[idx]["tp"] = new_r["tp"]
                 grid_by_idx[idx]["sl"] = new_r["sl"]
                 grid_by_idx[idx]["price"] = new_r["price"]
+                grid_by_idx[idx]["role"] = new_r["role"]
+                grid_by_idx[idx]["snap_delta"] = new_r["snap_delta"]
                 if grid_by_idx[idx]["status"] not in ("FILLED_IN_POSITION", "STOPPED_OUT"):
                     grid_by_idx[idx]["status"] = "IDLE" if new_r["cap"] > 0 else "EXIT_ONLY"
 
@@ -244,6 +335,54 @@ def run_live_session(args):
         return True
 
     # -----------------------------------------------------------------
+    # --- Dashboard Arming Hook ---
+    def on_dashboard_arm(data: dict):
+        nonlocal geom, proposal, active_profile, grid_dict, grid_by_idx
+        mode = data.get("mode", "SNAPPED")
+        posture = data.get("posture", "DIRECTIVE")
+        print(f"\n🌐 [DASHBOARD ARM] Received mode={mode}, posture={posture}")
+
+        geom_changed = False
+        b_lf, b_lb, b_hf, b_hb = None, None, None, None
+        
+        setup = getattr(dashboard, "_TELEMETRY", {}).get("pending_setup")
+        if setup:
+            b_lf = setup.get("brk_low_front")
+            b_lb = setup.get("brk_low_back")
+            b_hf = setup.get("brk_high_front")
+            b_hb = setup.get("brk_high_back")
+
+        # If a new container was submitted via the drawer, adopt the new geometry
+        if hasattr(dashboard, "_PENDING_GEOM") and dashboard._PENDING_GEOM is not None:
+            geom = dashboard._PENDING_GEOM
+            dashboard._PENDING_GEOM = None  # Consume and clear
+            print(f"📐 [DASHBOARD ARM] Updated container to: {geom.range_low} - {geom.range_high} (Δ {geom.range_high - geom.range_low:.2f})")
+            proposal = geom.generate_proposal_package(
+                brk_low_front=b_lf,
+                brk_low_back=b_lb,
+                brk_high_front=b_hf,
+                brk_high_back=b_hb
+            )
+            geom_changed = True
+
+        rearm_profile(
+            mode,
+            force=geom_changed,
+            brk_low_front=b_lf,
+            brk_low_back=b_lb,
+            brk_high_front=b_hf,
+            brk_high_back=b_hb
+        )
+
+    set_arm_callback(on_dashboard_arm)
+
+    # --- Dashboard Flatten Hook ---
+    def on_dashboard_flatten():
+        nonlocal state
+        print('\n🚨 [DASHBOARD PANIC] Emergency flatten invoked from Cockpit UI!')
+        state['panic_flatten_requested'] = True
+
+    set_flatten_callback(on_dashboard_flatten)
     # Telegram Bridge & Interactive Dispatcher
     # -----------------------------------------------------------------
     def handle_telegram_command(cmd_text: str, payload_data: Any = None):
@@ -281,7 +420,7 @@ def run_live_session(args):
                 f"• CME Market Price: <code>{px:.2f}</code>\n"
                 f"• Net Position: <b>{pos}</b> contracts\n"
                 f"• Active Profile: <b>{state['active_profile_name']}</b>\n"
-                f"• Container: <code>{args.low:.2f} — {args.high:.2f}</code> (Δ <code>{args.high - args.low:.2f}</code>)\n"
+                f"• Container: <code>{geom.range_low:.2f} — {geom.range_high:.2f}</code> (Δ <code>{geom.range_high - geom.range_low:.2f}</code>)\n"
                 f"• Time to Freeze: <code>{format_hms(rf)}</code> | Hard Expiry: <code>{format_hms(rt)}</code>\n"
                 f"• Engine State: <code>{state['status']}</code>\n"
                 f"• Realized PnL: <b>${state['realized_pnl']:.2f}</b>"
@@ -347,16 +486,44 @@ def run_live_session(args):
 
     # Dispatch Initial Telegram Proposal Card
     (getattr(bridge, "send_proposal_card", None) or getattr(bridge, "send_proposal", None) or getattr(bridge, "send_card", None) or (lambda p: print(f"[TelegramBridge] 📋 Proposal ready: {p}")))(proposal)
-    if not getattr(args, "wait_arm", False):
+    if has_init_range and not getattr(args, "wait_arm", False):
         bridge.send(
             f"⚡ <b>Auto-Arming Recommended Profile: {active_profile['name']}</b>\n"
             f"• Tap any alternate button above to re-scale ladder at any time."
         )
+    elif not has_init_range:
+        print("[Runner] ⏸️ No initial container provided. Standby — enter range in Dashboard drawer or /newrange in Telegram.")
+        bridge.send("⏸️ <b>Harmonic Nano-Grid Online in Standby</b>\n• Send <code>/newrange [low] [high]</code> or open Cockpit to stage.")
 
     print("\n🟢 Engine running — monitoring quotes and fills. Press Ctrl+C to stop.")
     try:
         while not state["flatten"]:
             now = time.time()
+
+            # Handle Emergency Flatten Signal directly on the main thread without exiting
+            if state.get("panic_flatten_requested"):
+                state["panic_flatten_requested"] = False
+                state["status"] = "FLATTENED"
+                state["paused"] = True
+                print("\n🚨 [PANIC EXECUTION] Executing full cancellation & market liquidation on main thread...")
+                if broker:
+                    print("[Ironbeam] 🧹 Canceling all resting limit orders...")
+                    broker.cancel_all(verbose=True)
+                    print("[Ironbeam] ⚡ Invoking broker.flatten_position()...")
+                    broker.flatten_position()
+                    time.sleep(1.0)
+                    broker.cancel_all(verbose=True)
+
+                for idx, r in grid_by_idx.items():
+                    r["status"] = "FLATTENED"
+                    r["entry_boid"] = None
+
+                bridge.send(
+                    "🚨 <b>EMERGENCY FLATTEN COMPLETED</b>\n"
+                    "• All working CME orders cancelled.\n"
+                    "• Open inventory flattened at market.\n"
+                    "• Quoting engine disarmed & parked."
+                )
             elapsed = now - t_start
             rem_freeze = max(0, freeze_at - elapsed)
             rem_flatten = max(0, max_duration - elapsed)
@@ -373,7 +540,7 @@ def run_live_session(args):
                     broker.cancel_all()
                 bridge.send(
                     f"⏰ <b>Session Lifespan Reached ({args.tf})</b>\n"
-                    f"• Container <code>{args.low:.2f} — {args.high:.2f}</code> expired.\n"
+                    f"• Container <code>{geom.range_low:.2f} — {geom.range_high:.2f}</code> expired.\n"
                     f"• All orders cancelled and positions flattened.\n"
                     f"• Send <code>/newrange [low] [high]</code> to redeploy."
                 )
@@ -401,6 +568,24 @@ def run_live_session(args):
                 state["active_orders"] = len(broker.active) if hasattr(broker, "active") else 0
                 state["position"] = broker.get_position() if hasattr(broker, "get_position") else getattr(broker, "position", 0)
 
+            # Compute Live Mark-to-Market Floating PnL across active rungs
+            total_floating_pnl = 0.0
+            for idx, r in grid_by_idx.items():
+                if r["status"] == "FILLED_IN_POSITION" and r.get("fill_price") and live_px > 0:
+                    entry_px = r["fill_price"]
+                    qty = r.get("fill_qty") or r.get("contracts", 1)
+                    if r["side"] == "LONG":
+                        pts = live_px - entry_px
+                    else:
+                        pts = entry_px - live_px
+                    mtm = round(pts * qty * mult, 2)
+                    r["floating_pnl"] = mtm
+                    total_floating_pnl += mtm
+                elif r["status"] != "FILLED_IN_POSITION":
+                    r["floating_pnl"] = 0.0
+
+            state["unrealized_pnl"] = round(total_floating_pnl, 2)
+
             # -----------------------------------------------------------------
             # 3. Process Inbound Fills (TP / SL / Entry)
             # -----------------------------------------------------------------
@@ -422,6 +607,8 @@ def run_live_session(args):
                             if r:
                                 r["status"] = "FILLED_IN_POSITION"
                                 r["entry_boid"] = None
+                                r["fill_price"] = fill_px if fill_px > 0 else r["price"]
+                                r["fill_qty"] = fill_qty
 
                                 bracket_side = "SELL" if r["side"] == "LONG" else "BUY"
                                 ts = int(time.time())
@@ -484,9 +671,12 @@ def run_live_session(args):
                                 r["tp_boid"] = None
                                 r["sl_boid"] = None
                                 r["status"] = "ROTATED_HARVEST"
-                                gain_pts = abs(fill_px - r["price"])
+                                gain_pts = abs(fill_px - (r.get("fill_price") or r["price"]))
                                 gain_usd = gain_pts * fill_qty * mult - (fee * fill_qty)
                                 state["realized_pnl"] += gain_usd
+                                r["booked_pnl"] = r.get("booked_pnl", 0.0) + gain_usd
+                                r["floating_pnl"] = 0.0
+                                r["fill_price"] = None
 
                                 print(f"🏆 [HARVEST COMPLETE] L{idx} harvested at {fill_px:.2f}! Total rotations: {r['rotations']}/{r['cap']}")
                                 bridge.send(
@@ -577,16 +767,19 @@ def run_live_session(args):
             # 5. Live Directional Bias & Telemetry Broadcast
             # -----------------------------------------------------------------
             live_brk_age = args.brk_age + elapsed
+            cur_low = geom.range_low
+            cur_high = geom.range_high
+            cur_span = cur_high - cur_low
             bias_update = bias_calc.compute_bias(
-                range_low=args.low,
-                range_high=args.high,
-                breaker_low_front=args.brk_low_front or (args.low + 0.3125 * (args.high - args.low)),
-                breaker_high_front=args.brk_high_front or (args.low + 0.6875 * (args.high - args.low)),
+                range_low=cur_low,
+                range_high=cur_high,
+                breaker_low_front=args.brk_low_front or (cur_low + 0.3125 * cur_span),
+                breaker_high_front=args.brk_high_front or (cur_low + 0.6875 * cur_span),
                 last_breaker_dir=args.brk_dir,
                 elapsed_seconds=live_brk_age,
                 mitigation_touches=args.brk_touches,
                 timeframe=args.tf,
-                prior_regime=bias_data["regime"]
+                prior_regime=bias_data.get("regime", "NEUTRAL_EQUILIBRIUM")
             )
             bias_data.update(bias_update)
             bias_data["elapsed_s"] = live_brk_age
@@ -605,9 +798,9 @@ def run_live_session(args):
                 "realized_pnl": state["realized_pnl"],
                 "unrealized_pnl": state["unrealized_pnl"],
                 "container": {
-                    "low": args.low, "high": args.high,
-                    "delta_p": args.high - args.low,
-                    "p_eq": p_eq,
+                    "low": geom.range_low, "high": geom.range_high,
+                    "delta_p": geom.range_high - geom.range_low,
+                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 2),
                     "s_step": geom.s_step, "s_harvest": geom.s_harvest
                 },
                 "bias": bias_data,
@@ -636,9 +829,10 @@ def run_live_session(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Harmonic Nano-Grid v4 Live Runner")
+    parser.add_argument("--profile", type=str, default="SNAPPED", help="Initial grid profile (SNAPPED, OPTION_A, OPTION_B, OPTION_C, LEAN_2_RUNG)")
     parser.add_argument("--instrument", type=str, default="MNQ", help="Contract symbol (MNQ, MES, NNQ)")
-    parser.add_argument("--low", type=float, required=True, help="Container Range Low")
-    parser.add_argument("--high", type=float, required=True, help="Container Range High")
+    parser.add_argument("--low", type=float, default=None, help="Container Range Low (optional, can stage via UI/TG)")
+    parser.add_argument("--high", type=float, default=None, help="Container Range High (optional, can stage via UI/TG)")
     parser.add_argument("--risk", type=float, default=1200.0, help="Total Side Risk Budget in USD")
     parser.add_argument("--tf", type=str, default="15m", help="Container Timeframe (1hr, 15m, 5m, 1m)")
     parser.add_argument("--source", type=str, default="paper", choices=["ironbeam", "paper"], help="Data/Execution engine")

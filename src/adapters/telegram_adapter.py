@@ -340,6 +340,17 @@ class TelegramBridge:
     def start_polling(self):
         if not self.api_url or not self.chat_id:
             return
+        # Drain stale unread messages from prior runs
+        try:
+            flush_res = requests.get(f"{self.api_url}/getUpdates?offset=-1", timeout=5).json()
+            if flush_res.get("ok") and flush_res.get("result"):
+                self.last_update_id = flush_res["result"][-1]["update_id"]
+                # Acknowledge up through last_update_id
+                requests.get(f"{self.api_url}/getUpdates?offset={self.last_update_id + 1}&limit=1", timeout=5)
+                print(f"[TelegramBridge] 🧹 Drained stale messages up to update_id {self.last_update_id}")
+        except Exception as e:
+            print(f"[TelegramBridge] ⚠️ Backlog flush notice: {e}")
+
         self.polling_active = True
         thread = threading.Thread(target=self._poll_loop, daemon=True)
         thread.start()

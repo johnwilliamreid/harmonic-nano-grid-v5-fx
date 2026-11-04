@@ -132,72 +132,115 @@ class HarmonicGridGeometry:
         brk_high_back: Optional[float] = None,
         brk_high_poc: Optional[float] = None
     ) -> Dict[int, Dict[str, Any]]:
+        raw_prices = [round_to_tick(self.range_low + i * self.s_step, self.tick_size) for i in range(17)]
+        max_snap_dist = 0.60 * self.s_step
+
+        prices = list(raw_prices)
+        snap_reason = {i: "Geometric Natural" for i in range(17)}
+        snap_roles = {}
+
+        # 1. Base roles: Equilibrium, Stops, and internal mid-range decimal fractions
+        snap_roles[0] = "STOP_LOW"
+        snap_roles[8] = "MEDIAN_EQUILIBRIUM"
+        snap_roles[16] = "STOP_HIGH"
+
+        for i in range(1, 8):
+            snap_roles[i] = f"MID_RANGE ({i / 16.0:.4f})"
+        for i in range(9, 16):
+            snap_roles[i] = f"MID_RANGE ({i / 16.0:.4f})"
+
+        # 2. Quartiles stay strictly geometric (tick rounding only, zero snap distortion)
+        prices[4] = round_to_tick(raw_prices[4], self.tick_size)
+        snap_roles[4] = "QUARTILE_ANCHOR (0.2500)"
+        snap_reason[4] = "Harmonic Octave Quartile (25%)"
+
+        prices[12] = round_to_tick(raw_prices[12], self.tick_size)
+        snap_roles[12] = "PREM_QUARTILE_ANCHOR (0.7500)"
+        snap_reason[12] = "Harmonic Octave Quartile (75%)"
+
+        # 3. Demand Breaker Snapping & Dynamic Outer Sweep
+        if brk_low_front is not None and brk_low_back is not None:
+            f_low = max(float(brk_low_front), float(brk_low_back))
+            b_low = min(float(brk_low_front), float(brk_low_back))
+            mt_low = b_low + 0.5 * (f_low - b_low)
+
+            d_front_idx = max(1, min(7, int(round((f_low - self.range_low) / self.s_step))))
+            d_mt_idx = max(1, min(d_front_idx - 1, int(round((mt_low - self.range_low) / self.s_step))))
+
+            # Breaker Front (Single Rung)
+            cand_f = min(raw_prices[d_front_idx] + max_snap_dist, max(raw_prices[d_front_idx] - max_snap_dist, f_low))
+            prices[d_front_idx] = round_entry(cand_f, "LONG", self.tick_size)
+            snap_roles[d_front_idx] = "BREAKER_FRONT"
+            snap_reason[d_front_idx] = "Demand Breaker Front Edge"
+
+            # Breaker MT (Single Rung)
+            cand_mt = min(raw_prices[d_mt_idx] + max_snap_dist, max(raw_prices[d_mt_idx] - max_snap_dist, mt_low))
+            prices[d_mt_idx] = round_entry(cand_mt, "LONG", self.tick_size)
+            snap_roles[d_mt_idx] = "BREAKER_MT"
+            snap_reason[d_mt_idx] = "Demand Breaker 50% MT"
+
+            # Intermediate rungs between MT and Front become BREAKER_ABSORPTION (unless it is L4 Quartile)
+            for r_mid in range(d_mt_idx + 1, d_front_idx):
+                if r_mid != 4:
+                    snap_roles[r_mid] = "BREAKER_ABSORPTION"
+                    snap_reason[r_mid] = "Breaker Absorption Core"
+
+            # Sweep Wick: strictly outside the Breaker Mitigation line
+            sweep_idx_long = max(1, d_mt_idx - 1)
+            snap_roles[sweep_idx_long] = "SWEEP_WICK"
+            snap_reason[sweep_idx_long] = "Outer Mitigation Liquidity Sweep"
+
+            # Levels deeper than sweep: generic external runway
+            for r_ext in range(1, sweep_idx_long):
+                snap_roles[r_ext] = "EXT_RUNWAY"
+                snap_reason[r_ext] = "External Buffer Runway"
+
+        # 4. Supply Breaker Snapping & Dynamic Outer Sweep
+        if brk_high_front is not None and brk_high_back is not None:
+            f_high = min(float(brk_high_front), float(brk_high_back))
+            b_high = max(float(brk_high_front), float(brk_high_back))
+            mt_high = f_high + 0.5 * (b_high - f_high)
+
+            s_front_idx = max(9, min(15, int(round((f_high - self.range_low) / self.s_step))))
+            s_mt_idx = max(s_front_idx + 1, min(15, int(round((mt_high - self.range_low) / self.s_step))))
+
+            # Breaker Front (Single Rung)
+            cand_sf = max(raw_prices[s_front_idx] - max_snap_dist, min(raw_prices[s_front_idx] + max_snap_dist, f_high))
+            prices[s_front_idx] = round_entry(cand_sf, "SHORT", self.tick_size)
+            snap_roles[s_front_idx] = "PREM_BREAKER_FRONT"
+            snap_reason[s_front_idx] = "Supply Breaker Front Edge"
+
+            # Breaker MT (Single Rung)
+            cand_smt = max(raw_prices[s_mt_idx] - max_snap_dist, min(raw_prices[s_mt_idx] + max_snap_dist, mt_high))
+            prices[s_mt_idx] = round_entry(cand_smt, "SHORT", self.tick_size)
+            snap_roles[s_mt_idx] = "PREM_BREAKER_MT"
+            snap_reason[s_mt_idx] = "Supply Breaker 50% MT"
+
+            # Intermediate rungs between Front and MT become PREM_BREAKER_ABSORPTION (unless it is L12 Quartile)
+            for r_mid in range(s_front_idx + 1, s_mt_idx):
+                if r_mid != 12:
+                    snap_roles[r_mid] = "PREM_BREAKER_ABSORPTION"
+                    snap_reason[r_mid] = "Prem Breaker Absorption Core"
+
+            # Sweep Wick: strictly outside the Breaker Mitigation line
+            sweep_idx_short = min(15, s_mt_idx + 1)
+            snap_roles[sweep_idx_short] = "PREM_SWEEP_WICK"
+            snap_reason[sweep_idx_short] = "Outer Mitigation Liquidity Sweep"
+
+            # Levels higher than sweep: generic external runway
+            for r_ext in range(sweep_idx_short + 1, 16):
+                snap_roles[r_ext] = "PREM_EXT_RUNWAY"
+                snap_reason[r_ext] = "External Buffer Runway"
+
+        # Strictly enforce price monotonicity
+        for i in range(1, 16):
+            if prices[i] <= prices[i - 1]:
+                prices[i] = round_to_tick(prices[i - 1] + self.tick_size, self.tick_size)
+
         if active_discount_rungs is None:
             active_discount_rungs = [2, 3, 4, 5, 6, 7]
         if active_premium_rungs is None:
             active_premium_rungs = [9, 10, 11, 12, 13, 14]
-
-        raw_prices = [round_to_tick(self.range_low + i * self.s_step, self.tick_size) for i in range(17)]
-        max_snap_dist = 0.60 * self.s_step
-
-        d_diag = self.diagnose_breaker(brk_low_front, brk_low_back, side="LONG")
-        f_low, b_low = d_diag["front"], d_diag["back"]
-
-        s_diag = self.diagnose_breaker(brk_high_front, brk_high_back, side="SHORT")
-        f_high, b_high = s_diag["front"], s_diag["back"]
-
-        snapped_l3, snapped_l4, snapped_l5 = raw_prices[3], raw_prices[4], raw_prices[5]
-        snap_reason = {i: "Geometric Natural" for i in range(17)}
-        snap_roles = {i: self.ROLES.get(i, "RUNWAY") for i in range(17)}
-
-        # --- Demand Snapping ---
-        if f_low is not None and b_low is not None:
-            mt_low = b_low + 0.5 * (f_low - b_low)
-            poc_low = brk_low_poc if brk_low_poc is not None else (b_low + 0.75 * (f_low - b_low))
-
-            cand_l5 = min(raw_prices[5] + max_snap_dist, max(raw_prices[5] - max_snap_dist, f_low))
-            snapped_l5 = round_entry(cand_l5, "LONG", self.tick_size)
-            snap_reason[5] = "Breaker Front"
-            snap_roles[5] = "BREAKER_FRONT"
-
-            cand_l4 = min(raw_prices[4] + max_snap_dist, max(raw_prices[4] - max_snap_dist, poc_low))
-            snapped_l4 = round_entry(cand_l4, "LONG", self.tick_size)
-            snap_reason[4] = "Quartile Anchor POC"
-            snap_roles[4] = "QUARTILE_ANCHOR"
-
-            cand_l3 = min(raw_prices[3] + max_snap_dist, max(raw_prices[3] - max_snap_dist, mt_low))
-            snapped_l3 = round_entry(cand_l3, "LONG", self.tick_size)
-            snap_reason[3] = "Breaker MT (50%)"
-            snap_roles[3] = "BREAKER_MT"
-
-        # --- Supply Snapping ---
-        snapped_l11, snapped_l12, snapped_l13 = raw_prices[11], raw_prices[12], raw_prices[13]
-        if f_high is not None and b_high is not None:
-            mt_high = f_high + 0.5 * (b_high - f_high)
-            poc_high = brk_high_poc if brk_high_poc is not None else (f_high + 0.25 * (b_high - f_high))
-
-            cand_l11 = max(raw_prices[11] - max_snap_dist, min(raw_prices[11] + max_snap_dist, f_high))
-            snapped_l11 = round_entry(cand_l11, "SHORT", self.tick_size)
-            snap_reason[11] = "Breaker Front"
-            snap_roles[11] = "PREM_BREAKER_FRONT"
-
-            cand_l12 = max(raw_prices[12] - max_snap_dist, min(raw_prices[12] + max_snap_dist, poc_high))
-            snapped_l12 = round_entry(cand_l12, "SHORT", self.tick_size)
-            snap_reason[12] = "Quartile Anchor POC"
-            snap_roles[12] = "PREM_QUARTILE_ANCHOR"
-
-            cand_l13 = max(raw_prices[13] - max_snap_dist, min(raw_prices[13] + max_snap_dist, mt_high))
-            snapped_l13 = round_entry(cand_l13, "SHORT", self.tick_size)
-            snap_reason[13] = "Breaker MT (50%)"
-            snap_roles[13] = "PREM_BREAKER_MT"
-
-        prices = list(raw_prices)
-        prices[3], prices[4], prices[5] = snapped_l3, snapped_l4, snapped_l5
-        prices[11], prices[12], prices[13] = snapped_l11, snapped_l12, snapped_l13
-
-        for i in range(1, 16):
-            if prices[i] <= prices[i - 1]:
-                prices[i] = round_to_tick(prices[i - 1] + self.tick_size, self.tick_size)
 
         n_disc = len(active_discount_rungs)
         n_prem = len(active_premium_rungs)
@@ -209,18 +252,31 @@ class HarmonicGridGeometry:
             side = "LONG" if idx < 8 else ("SHORT" if idx > 8 else "MID")
             is_active = (idx in active_discount_rungs) if side == "LONG" else ((idx in active_premium_rungs) if side == "SHORT" else False)
 
-            # Feature-bound dynamic rotation cap:
-            role = snap_roles.get(idx, self.ROLES.get(idx, "RUNWAY"))
+            role = snap_roles.get(idx, f"MID_RANGE ({idx / 16.0:.4f})")
             if not is_active:
                 cap = 0
+            elif "BREAKER_FRONT" in role:
+                cap = 3   # Primary edge rejection: 3 rotations
+            elif "BREAKER_ABSORPTION" in role:
+                cap = 2   # Inner core volume absorption: 2 rotations
             elif "BREAKER_MT" in role:
                 cap = 1   # Structural exhaustion line: 1-shot limit
             elif "SWEEP_WICK" in role:
                 cap = 1   # Outer boundary sweep: 1-shot limit
-            elif "BREAKER_FRONT" in role:
-                cap = 2   # Front edge rejection: 2 rotations
+            elif "QUARTILE_ANCHOR" in role:
+                # Quartile adopts the cap of its closest neighbor inward toward Equilibrium (L8)
+                inward_neighbor_idx = (idx + 1) if idx < 8 else (idx - 1)
+                neighbor_role = snap_roles.get(inward_neighbor_idx, "")
+                if "BREAKER_FRONT" in neighbor_role:
+                    cap = 3
+                elif "BREAKER_ABSORPTION" in neighbor_role:
+                    cap = 2
+                elif "BREAKER_MT" in neighbor_role:
+                    cap = 1
+                else:
+                    cap = 4   # Inherits Mid-Range corridor dynamic (4 rotations)
             else:
-                cap = 4   # Quartiles, corridors, and pivots: 4 rotations
+                cap = 4   # Mid-Range corridor and octave deciles: 4 rotations
 
             px = prices[idx]
             raw_px = raw_prices[idx]
