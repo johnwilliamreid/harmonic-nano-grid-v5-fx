@@ -599,6 +599,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- MULTI-PROFILE CARDS CONTAINER -->
   <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin:14px 0;"></div>
 
+  <!-- PRE-COMMIT GRID PREVIEW TABLE -->
+  <div id="drawer-grid-preview" style="display:none; margin:14px 0; border:1px solid rgba(56,189,248,0.3); background:rgba(0,0,0,0.45); border-radius:8px; padding:12px; box-shadow:inset 0 0 15px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <span style="font-size:12px; font-weight:800; color:var(--accent);">🔍 GRID MATRIX PREVIEW: <span id="preview-profile-title" style="color:#fff;">-</span></span>
+      <span id="preview-risk-summary" style="font-size:11px; color:var(--warn); font-family:monospace;">-</span>
+    </div>
+    <div style="max-height: 220px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-family: monospace; font-size: 11px;">
+      <table style="width: 100%; border-collapse: collapse; text-align: left;">
+        <thead>
+          <tr style="border-bottom: 1px solid rgba(255,255,255,0.15); color: var(--text-muted); position: sticky; top: 0; background: #0c101d;">
+            <th style="padding: 5px 8px;">RUNG</th>
+            <th style="padding: 5px 8px;">ACTION</th>
+            <th style="padding: 5px 8px;">PRICE</th>
+            <th style="padding: 5px 8px;">CONTRACTS</th>
+            <th style="padding: 5px 8px;">HARVEST (TP)</th>
+            <th style="padding: 5px 8px;">STATUS</th>
+          </tr>
+        </thead>
+        <tbody id="preview-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:8px 12px; border-radius:6px; font-size:11.5px;">
     <div>
       <span class="stat-label">1/8 TP Target:</span> <b id="prop-tp-pts" class="mono" style="color:var(--text);">-- pts</b>
@@ -990,6 +1013,84 @@ async function triggerEmergencyFlatten() {
   }
 }
 
+
+let _CURRENT_STAGED_PROP = null;
+
+function previewProfileGrid(profileKey) {
+  if (!_CURRENT_STAGED_PROP) {
+    alert("No active proposal staged.");
+    return;
+  }
+  const prop = _CURRENT_STAGED_PROP;
+  const card = (prop.cards || []).find(c => c.key === profileKey);
+  const pDiv = document.getElementById('drawer-grid-preview');
+  const tbody = document.getElementById('preview-table-body');
+  
+  if (!pDiv || !tbody) {
+    console.error("Preview DOM elements not found");
+    return;
+  }
+
+  document.getElementById('preview-profile-title').textContent = card ? card.title : profileKey;
+  document.getElementById('preview-risk-summary').textContent = card ? `Risk: $${card.side_risk.toFixed(2)} (Budget: $${prop.risk_budget || 200})` : '';
+
+  const low = parseFloat(prop.draft_low || 0);
+  const high = parseFloat(prop.draft_high || 0);
+  const span = high - low;
+  const s_step = span / 16.0;
+  const s_harvest = parseFloat(prop.tp_pts || (span / 8.0));
+
+  const discSet = new Set((card && card.disc) ? card.disc : []);
+  const premSet = new Set((card && card.prem) ? card.prem : []);
+
+  let html = '';
+  for (let i = 16; i >= 0; i--) {
+    const px = (low + i * s_step).toFixed(2);
+    let action = '<span style="color:var(--text-dim);">-</span>';
+    let tp = '<span style="color:var(--text-dim);">-</span>';
+    let contracts = '<span style="color:var(--text-dim);">-</span>';
+    let status = '<span style="color:var(--text-muted); font-size:10px;">EXT RUNWAY</span>';
+    let rowBg = 'transparent';
+
+    if (i < 8) {
+      action = '<span style="color:var(--bull); font-weight:700;">BUY (BID)</span>';
+      if (discSet.has(i)) {
+        contracts = '<b style="color:#fff;">1 ct</b>';
+        tp = `<span style="color:var(--bull);">${(parseFloat(px) + s_harvest).toFixed(2)}</span>`;
+        status = '<span class="badge" style="background:rgba(16,185,129,0.18); color:var(--bull); font-size:9.5px;">ARMED</span>';
+        rowBg = 'rgba(16,185,129,0.08)';
+      }
+    } else if (i > 8) {
+      action = '<span style="color:var(--bear); font-weight:700;">SELL (ASK)</span>';
+      if (premSet.has(i)) {
+        contracts = '<b style="color:#fff;">1 ct</b>';
+        tp = `<span style="color:var(--bear);">${(parseFloat(px) - s_harvest).toFixed(2)}</span>`;
+        status = '<span class="badge" style="background:rgba(244,63,94,0.18); color:var(--bear); font-size:9.5px;">ARMED</span>';
+        rowBg = 'rgba(244,63,94,0.08)';
+      }
+    } else {
+      action = '<span style="color:var(--accent); font-weight:700;">EQUILIBRIUM</span>';
+      status = '<span class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent); font-size:9.5px;">L8 P_EQ</span>';
+      rowBg = 'rgba(56,189,248,0.05)';
+    }
+
+    html += `
+      <tr style="border-bottom: 1px solid rgba(255,255,255,0.06); background: ${rowBg};">
+        <td style="padding: 5px 10px; font-weight:bold; color:var(--text);">L${i}</td>
+        <td style="padding: 5px 10px;">${action}</td>
+        <td style="padding: 5px 10px; font-weight:600; color:#fff;">${px}</td>
+        <td style="padding: 5px 10px;">${contracts}</td>
+        <td style="padding: 5px 10px;">${tp}</td>
+        <td style="padding: 5px 10px;">${status}</td>
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = html;
+  pDiv.style.display = 'block';
+  pDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 async function submitProposalChoice(choice) {
   try {
     const posture = document.querySelector('input[name="posture"]:checked')?.value || 'DIRECTIVE';
@@ -1035,6 +1136,7 @@ async function refreshTelemetry() {
     const prop = d.staged_proposal;
     if (prop && prop.active) {
       pDrawer.style.display = 'block';
+      _CURRENT_STAGED_PROP = prop;
       document.getElementById('prop-tf-badge').textContent = `${prop.tf} Tier`;
       document.getElementById('prop-draft-badge').textContent = `Draft: ${(prop.draft_low || 0).toFixed(2)} — ${(prop.draft_high || 0).toFixed(2)} (${(prop.draft_span || 0).toFixed(2)} pts)`;
       document.getElementById('prop-budget-label').textContent = `$${(prop.risk_budget || 200).toFixed(2)}`;
@@ -1075,9 +1177,14 @@ async function refreshTelemetry() {
                 <div class="stat-row"><span class="stat-label">Per-Side Risk (R_side)</span><span class="stat-val mono" style="color:${riskColor}; font-weight:700;">$${c.side_risk.toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">/ $${prop.risk_budget}</span></span></div>
                 <div class="stat-row"><span class="stat-label">Two-Sided Sum</span><span class="stat-val mono" style="color:var(--text-muted);">$${c.total_risk.toFixed(2)}</span></div>
               </div>
-              <button class="btn ${c.key === 'SNAPPED' ? 'btn-snap' : 'btn-geom'}" style="width:100%; justify-content:center; padding:7px 0; margin-top:6px;" onclick="submitProposalChoice('${c.key}')">
-                ⚡ Arm ${c.key.replace('_', ' ')}
-              </button>
+              <div style="display:flex; gap:6px; margin-top:8px;">
+                <button type="button" class="btn btn-aux" style="flex:1; justify-content:center; padding:6px 0; font-size:11px;" onclick="previewProfileGrid('${c.key}')">
+                  🔍 Preview
+                </button>
+                <button type="button" class="btn ${c.key === 'SNAPPED' ? 'btn-snap' : 'btn-geom'}" style="flex:1.4; justify-content:center; padding:6px 0; font-size:11px;" onclick="submitProposalChoice('${c.key}')">
+                  ⚡ Commit &amp; Arm
+                </button>
+              </div>
             </div>
           `;
         }).join('');

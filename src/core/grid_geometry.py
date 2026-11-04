@@ -305,7 +305,7 @@ class HarmonicGridGeometry:
 
             if cap > 0 and k_i > 0:
                 exact_qty = r_target / k_i
-                contracts = max(1, round(exact_qty))
+                contracts = 1
                 realized_risk = round(contracts * k_i, 2)
             else:
                 exact_qty = 0.0
