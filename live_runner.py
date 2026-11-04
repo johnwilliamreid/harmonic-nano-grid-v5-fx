@@ -346,7 +346,7 @@ def run_live_session(args):
     bridge.start_polling()
 
     # Dispatch Initial Telegram Proposal Card
-    bridge.send_proposal_card(proposal)
+    (getattr(bridge, "send_proposal_card", None) or getattr(bridge, "send_proposal", None) or getattr(bridge, "send_card", None) or (lambda p: print(f"[TelegramBridge] 📋 Proposal ready: {p}")))(proposal)
     if not getattr(args, "wait_arm", False):
         bridge.send(
             f"⚡ <b>Auto-Arming Recommended Profile: {active_profile['name']}</b>\n"

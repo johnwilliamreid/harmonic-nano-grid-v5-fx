@@ -556,11 +556,16 @@ class IronbeamAdapter:
                     is_buy = side_raw in ("BUY", "LONG", "B")
                     signed = qty if is_buy else -qty
 
+                    is_flatten_order = our_oid.startswith("FLATTEN_")
+
                     with self._fill_lock:
-                        self.position_map[inst] = self.position_map.get(inst, 0) + signed
-                        self.gross = sum(abs(v) for v in self.position_map.values())
-                        if inst == self.current_instrument:
-                            self.position += signed
+                        # FLATTEN orders are reconciled directly from broker in flatten_position()
+                        # Applying delta here causes a double-decrement race condition.
+                        if not is_flatten_order:
+                            self.position_map[inst] = self.position_map.get(inst, 0) + signed
+                            self.gross = sum(abs(v) for v in self.position_map.values())
+                            if inst == self.current_instrument:
+                                self.position += signed
                         self.last_price = px
                         self.last_price_time = time.time()
 
