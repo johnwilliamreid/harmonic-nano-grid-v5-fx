@@ -1,4 +1,22 @@
 import os
+from pathlib import Path
+
+# Auto-load repository .env file if environment variables are not exported in current shell
+def _load_local_env():
+    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    if env_path.exists():
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'").strip('"')
+                    if k not in os.environ or not os.environ[k]:
+                        os.environ[k] = v
+
+_load_local_env()
+
+import os
 import json
 import time
 import threading
@@ -295,48 +313,53 @@ class TelegramBridge:
             long_rules = "\n".join([f"    • {r}" for r in opt_data["level_rules_long"]])
             short_rules = "\n".join([f"    • {r}" for r in opt_data["level_rules_short"]])
 
+            y_rot = opt_data.get('harvest_yield_per_rot', 0.0)
+            cov = opt_data.get('breaker_coverage', 'N/A')
             return (
-                f"  🟢 <b>Long Quotes:</b>\n{long_rules}\n"
-                f"  🔴 <b>Short Quotes:</b>\n{short_rules}\n"
+                f"  🟢 <b>Long Quotes ({len(opt_data['discount_rungs'])} rungs):</b>\n{long_rules}\n"
+                f"  🔴 <b>Short Quotes ({len(opt_data['premium_rungs'])} rungs):</b>\n{short_rules}\n"
                 f"  • Total Side Risk: <b>${risk_val:.2f}</b> ({fit_icon} {fit_text})\n"
+                f"  • Harvest Yield: <b>+${y_rot:.2f} / rot</b> | Breaker Coverage: <b>{cov}</b>\n"
             )
 
-        if opts_nnq["OPTION_B"]["total_catastrophic_risk"] <= risk and opts_nnq["OPTION_A"]["total_catastrophic_risk"] > risk:
-            rec_key = "OPTION_B"
-        elif opts_nnq["OPTION_C"]["total_catastrophic_risk"] <= risk and opts_nnq["OPTION_A"]["total_catastrophic_risk"] > risk:
-            rec_key = "OPTION_C"
-        else:
-            rec_key = diag["best_fit"]
+        # Build dynamic profile review message for all options
+        rec_key = diag.get("best_fit", "OPTION_D")
+        if rec_key not in opts_nnq:
+            rec_key = "OPTION_D" if "OPTION_D" in opts_nnq else "OPTION_B"
+
+        profile_sections = []
+        for opt_k, opt_v in opts_nnq.items():
+            is_rec = (opt_k == rec_key)
+            star = "⭐" if is_rec else "🔘"
+            rec_badge = " <b>(RECOMMENDED)</b>" if is_rec else ""
+            profile_sections.append(
+                f"{star} <b>{opt_v['name']}</b>{rec_badge}\n"
+                f"{fmt_snapped_option_block(opt_v, risk)}"
+            )
 
         msg_profiles = (
-            f"⚖️ <b>EXECUTION PROFILES — NNQ vs. MNQ</b>\n"
+            f"⚖️ <b>EXECUTION PROFILES — NNQ (E-nano $0.20/pt)</b>\n"
             f"───────────────────────────────────\n"
-            f"🟢 <b>NNQ (E-nano — $0.20/pt | Tick: 0.50)</b>\n\n"
-            f"{'⭐' if rec_key == 'OPTION_B' else '🔘'} <b>Option B: {opts_nnq['OPTION_B']['name']}</b> {'(RECOMMENDED — FITS BUDGET)' if rec_key == 'OPTION_B' else ''}\n"
-            f"{fmt_snapped_option_block(opts_nnq['OPTION_B'], risk)}\n"
-            f"{'⭐' if rec_key == 'OPTION_C' else '🔘'} <b>Option C: {opts_nnq['OPTION_C']['name']}</b> {'(RECOMMENDED)' if rec_key == 'OPTION_C' else ''}\n"
-            f"{fmt_snapped_option_block(opts_nnq['OPTION_C'], risk)}\n"
-            f"{'⭐' if rec_key == 'OPTION_A' else '🔘'} <b>Option A: {opts_nnq['OPTION_A']['name']}</b> {'(RECOMMENDED)' if rec_key == 'OPTION_A' else ''}\n"
-            f"{fmt_snapped_option_block(opts_nnq['OPTION_A'], risk)}"
-            f"───────────────────────────────────\n"
-            f"🟡 <b>MNQ (Micro — $2.00/pt | Tick: 0.25)</b>\n"
-            f"• Option B Risk: <b>${opts_mnq['OPTION_B']['total_catastrophic_risk']:.2f}</b> (⚠️ Over by ${opts_mnq['OPTION_B']['total_catastrophic_risk'] - risk:.2f})\n"
+            + "\n".join(profile_sections) +
             f"───────────────────────────────────\n"
             f"<b>ARM OR OVERRIDE DIRECTIVE:</b>"
         )
 
-        buttons = [
-            [(f"🚀 Arm NNQ Option B (${opts_nnq['OPTION_B']['total_catastrophic_risk']:.0f} Risk)", f"arm:NNQ_{pid}:OPTION_B")],
-            [(f"🔘 NNQ Option C (${opts_nnq['OPTION_C']['total_catastrophic_risk']:.0f})", f"arm:NNQ_{pid}:OPTION_C"),
-             (f"🔘 NNQ Option A (${opts_nnq['OPTION_A']['total_catastrophic_risk']:.0f})", f"arm:NNQ_{pid}:OPTION_A")],
-            [("🐻 Override: Shorts Only (Fade Rallies)", f"override_mode:SHORTS_ONLY:{pid}"),
-             ("⚖️ Force Two-Sided Balanced", f"override_mode:BALANCED:{pid}")],
-            [("🔄 Start Over", "prompt:range"), ("💵 Change Risk", "prompt:risk")],
-            [("❌ Dismiss", f"dismiss:{pid}")]
-        ]
+        buttons = []
+        # Dynamic Arm Buttons for every option in NNQ package
+        for opt_k, opt_v in opts_nnq.items():
+            r_cost = opt_v["total_catastrophic_risk"]
+            star_prefix = "⭐ " if opt_k == rec_key else "🚀 "
+            buttons.append([(f"{star_prefix}Arm {opt_v['name']} (${r_cost:.0f})", f"arm:NNQ_{pid}:{opt_k}")])
+
+        buttons.append([
+            ("🐻 Override: Shorts Only", f"override_mode:SHORTS_ONLY:{pid}"),
+            ("⚖️ Force Balanced", f"override_mode:BALANCED:{pid}")
+        ])
+        buttons.append([("🔄 Start Over", "prompt:range"), ("💵 Change Risk", "prompt:risk")])
+        buttons.append([("❌ Dismiss", f"dismiss:{pid}")])
 
         self.send(msg_profiles, buttons=buttons)
-
     def start_polling(self):
         if not self.api_url or not self.chat_id:
             return

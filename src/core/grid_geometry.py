@@ -305,7 +305,7 @@ class HarmonicGridGeometry:
 
             if cap > 0 and k_i > 0:
                 exact_qty = r_target / k_i
-                contracts = 1
+                contracts = max(1, round(exact_qty))
                 realized_risk = round(contracts * k_i, 2)
             else:
                 exact_qty = 0.0
@@ -333,6 +333,8 @@ class HarmonicGridGeometry:
                 "contracts": contracts,
                 "exact_qty": round(exact_qty, 4),
                 "unit_risk": round(k_i, 2),
+                "k_i": k_i,
+                "reward_pts": reward_pts,
                 "risk_dollar": realized_risk,
                 "reward_dollar": reward_dollar,
                 "rr_ratio": rr_ratio,
@@ -341,7 +343,74 @@ class HarmonicGridGeometry:
                 "is_active": is_active
             }
 
+        # Dynamic greedy budget optimizer: fill remaining budget without exceeding r_side_budget
+        for active_side in ["LONG", "SHORT"]:
+            active_rungs = [idx for idx, r in grid.items() if r.get("side") == active_side and r.get("cap", 0) > 0 and r.get("k_i", 0) > 0]
+            if not active_rungs:
+                continue
+
+            # Step 1: If initial rounded contracts exceed budget, trim from highest-risk rung down
+            current_risk = sum(grid[idx]["contracts"] * grid[idx]["k_i"] for idx in active_rungs)
+            while current_risk > self.r_side_budget and any(grid[idx]["contracts"] > 1 for idx in active_rungs):
+                candidates = [idx for idx in active_rungs if grid[idx]["contracts"] > 1]
+                idx_to_trim = max(candidates, key=lambda i: grid[i]["k_i"])
+                grid[idx_to_trim]["contracts"] -= 1
+                current_risk = sum(grid[idx]["contracts"] * grid[idx]["k_i"] for idx in active_rungs)
+
+            # Step 2: Utilize unused budget cash by adding contracts where unit risk k_i is lowest
+            rem_budget = self.r_side_budget - current_risk
+            while rem_budget > 0:
+                eligible = [idx for idx in active_rungs if grid[idx]["k_i"] <= rem_budget]
+                if not eligible:
+                    break
+                best_idx = min(eligible, key=lambda i: grid[i]["k_i"])
+                grid[best_idx]["contracts"] += 1
+                rem_budget -= grid[best_idx]["k_i"]
+
+            # Step 3: Recompute final dollar values
+            for idx in active_rungs:
+                c = grid[idx]["contracts"]
+                grid[idx]["risk_dollar"] = round(c * grid[idx]["k_i"], 2)
+                grid[idx]["reward_dollar"] = round(c * grid[idx]["reward_pts"] * self.multiplier, 2)
+                grid[idx]["rr_ratio"] = round(grid[idx]["reward_dollar"] / grid[idx]["risk_dollar"], 2) if grid[idx]["risk_dollar"] > 0 else 0.0
+
         return grid
+
+    def compute_remaining_risk(self, grid_state: Dict[int, Dict[str, Any]]) -> Dict[str, float]:
+        """Calculates live remaining risk by side taking into account exhausted rungs."""
+        long_rem = 0.0
+        short_rem = 0.0
+
+        for idx, r in grid_state.items():
+            side = r.get("side", "MID")
+            if side not in ("LONG", "SHORT"):
+                continue
+
+            cap = r.get("cap", 0)
+            rots = r.get("rotations", 0)
+            open_pos = r.get("open_position", 0) or r.get("position", 0)
+            k_i = r.get("k_i", r.get("unit_risk", 0.0))
+            order_qty = r.get("contracts", 0)
+
+            # If rung holds an active open position, that risk is locked until TP/SL
+            pos_risk = abs(open_pos) * k_i
+
+            # If rung has remaining rotations allowed, pending limit orders still carry risk
+            unexhausted = (rots < cap) if cap > 0 else False
+            pending_risk = order_qty * k_i if unexhausted and (open_pos == 0) else 0.0
+
+            rung_live_risk = pos_risk + pending_risk
+
+            if side == "LONG":
+                long_rem += rung_live_risk
+            elif side == "SHORT":
+                short_rem += rung_live_risk
+
+        return {
+            "long_rem_risk": round(long_rem, 2),
+            "short_rem_risk": round(short_rem, 2),
+            "max_side_rem_risk": round(max(long_rem, short_rem), 2)
+        }
 
     def generate_proposal_package(
         self,
@@ -369,6 +438,44 @@ class HarmonicGridGeometry:
             composite_regime = "WIDE"
             composite_fit = "OPTION_B"
 
+        # Derive dynamic breaker-centered rungs for Option D
+        d_front_idx = 5
+        if brk_low_front is not None:
+            d_front_idx = max(2, min(7, int(round((float(brk_low_front) - self.range_low) / self.s_step))))
+        s_front_idx = 11
+        if brk_high_front is not None:
+            s_front_idx = max(9, min(14, int(round((float(brk_high_front) - self.range_low) / self.s_step))))
+
+        # Build dynamic cluster including 6/7 and 9/10 whenever breaker sits adjacent
+        opt_d_disc = sorted(list(set([d_front_idx, max(2, d_front_idx - 1), 4, 6, 7])))
+        opt_d_disc = [r for r in opt_d_disc if 1 <= r <= 7]
+        
+        opt_d_prem = sorted(list(set([s_front_idx, min(14, s_front_idx + 1), 9, 10, 12])))
+        opt_d_prem = [r for r in opt_d_prem if 9 <= r <= 15]
+
+        # Derive dynamic breaker-centered rungs
+        d_front_idx = 5
+        if brk_low_front is not None:
+            d_front_idx = max(2, min(7, int(round((float(brk_low_front) - self.range_low) / self.s_step))))
+        d_mt_idx = max(1, d_front_idx - 1)
+        if brk_low_front is not None and brk_low_back is not None:
+            mt_l = min(float(brk_low_front), float(brk_low_back)) + 0.5 * abs(float(brk_low_front) - float(brk_low_back))
+            d_mt_idx = max(1, min(d_front_idx - 1, int(round((mt_l - self.range_low) / self.s_step))))
+
+        s_front_idx = 11
+        if brk_high_front is not None:
+            s_front_idx = max(9, min(14, int(round((float(brk_high_front) - self.range_low) / self.s_step))))
+        s_mt_idx = min(15, s_front_idx + 1)
+        if brk_high_front is not None and brk_high_back is not None:
+            mt_h = min(float(brk_high_front), float(brk_high_back)) + 0.5 * abs(float(brk_high_front) - float(brk_high_back))
+            s_mt_idx = max(s_front_idx + 1, min(15, int(round((mt_h - self.range_low) / self.s_step))))
+
+        opt_d_disc = sorted(list(set([d_front_idx, max(2, d_front_idx - 1), 4, 6, 7])))
+        opt_d_disc = [r for r in opt_d_disc if 1 <= r <= 7]
+        
+        opt_d_prem = sorted(list(set([s_front_idx, min(14, s_front_idx + 1), 9, 10, 12])))
+        opt_d_prem = [r for r in opt_d_prem if 9 <= r <= 15]
+
         configs = {
             "OPTION_A": {
                 "name": "6-Level Balanced",
@@ -378,18 +485,33 @@ class HarmonicGridGeometry:
                 "l7_policy": "Armed (Cap: 4 rot)"
             },
             "OPTION_B": {
-                "name": "1/8 Octave Backbone (Conservative)",
+                "name": "Conservative Backbone (3-Rung)",
                 "desc": "Pure 1/8 steps, zero midline chop risk",
                 "discount_rungs": [2, 4, 6],
                 "premium_rungs": [10, 12, 14],
                 "l7_policy": "Dropped (Zero midline exposure)"
             },
             "OPTION_C": {
-                "name": "4-Level Structural (Compact Core)",
+                "name": "Structural Core (4-Rung)",
                 "desc": "Quartile anchor L4/L12 locked, outer wick dropped",
                 "discount_rungs": [3, 4, 6, 7],
                 "premium_rungs": [9, 10, 12, 13],
                 "l7_policy": "Armed (Cap: 4 rot)"
+            },
+            "OPTION_D": {
+                "name": "Breaker Snapped (Ratio-Driven Allocation)",
+                "desc": "Structure-anchored with heavy midline velocity ratio",
+                "discount_rungs": opt_d_disc,
+                "premium_rungs": opt_d_prem,
+                "l7_policy": "Velocity Sized (Cap: 4 rot)",
+                "is_ratio_weighted": True
+            },
+            "OPTION_E": {
+                "name": "Lean Mitigation Core (2-Rung)",
+                "desc": "Tight 2-rung defense at Breaker Front and MT",
+                "discount_rungs": sorted(list(set([d_front_idx, d_mt_idx]))),
+                "premium_rungs": sorted(list(set([s_front_idx, s_mt_idx]))),
+                "l7_policy": "Bypassed"
             }
         }
 
@@ -418,14 +540,31 @@ class HarmonicGridGeometry:
                 k_i = (dist_pts * self.multiplier) + self.fee_per_rt
                 k_weights_disc.append(k_i)
 
-            ladder_qty = [max(1, round(r_target / k)) for k in k_weights_disc]
+            if cfg.get("is_ratio_weighted", False):
+                # Ratio-driven allocation: allocate by structural role weight rather than pure distance-to-stop
+                weights = []
+                for r in d_rungs:
+                    rg_role = full_grid[r]["role"]
+                    if r in [6, 7, 9, 10]:  # Midline rotational velocity corridor
+                        weights.append(1.8)
+                    elif "FRONT" in rg_role or "MT" in rg_role:  # Structural breaker edge
+                        weights.append(1.6)
+                    elif "QUARTILE" in rg_role:
+                        weights.append(1.2)
+                    else:
+                        weights.append(1.0)
+                sum_w = sum(weights)
+                budget_shares = [(w / sum_w) * self.r_side_budget for w in weights]
+                ladder_qty = [max(1, round(b_share / k)) for b_share, k in zip(budget_shares, k_weights_disc)]
+            else:
+                ladder_qty = [max(1, round(r_target / k)) for k in k_weights_disc]
 
             total_catastrophic_risk = sum(q * k for q, k in zip(ladder_qty, k_weights_disc))
             while total_catastrophic_risk > self.r_side_budget and any(q > 1 for q in ladder_qty):
-                for i in range(len(ladder_qty) - 1, -1, -1):
-                    if ladder_qty[i] > 1:
-                        ladder_qty[i] -= 1
-                        break
+                # When trimming, trim from lowest weight/efficiency rungs first instead of automatically starving middle rungs
+                candidates = [i for i, q in enumerate(ladder_qty) if q > 1]
+                idx_to_trim = min(candidates, key=lambda i: (1.0 / k_weights_disc[i]))
+                ladder_qty[idx_to_trim] -= 1
                 total_catastrophic_risk = sum(q * k for q, k in zip(ladder_qty, k_weights_disc))
 
             level_rules_long = []
@@ -444,8 +583,36 @@ class HarmonicGridGeometry:
                     f"L{r} ({rg['range_level']:.4f}) @ <b>{rg['price']:.2f}</b>{snap_info} -> TP: <code>{rg['tp']:.2f}</code> | max {q} ct, cap {rg['cap']} rot"
                 )
 
+            # 1. Harvest Yield per full rotation net of round-trip fees
+            harvest_pts = self.s_harvest
+            gross_yield = sum(q * harvest_pts * self.multiplier for q in ladder_qty)
+            total_fees = sum(q * self.fee_per_rt for q in ladder_qty)
+            net_harvest_yield = max(0.0, round(gross_yield - total_fees, 2))
+
+            # 2. Breaker Body Coverage percentage
+            breaker_rungs_active = 0
+            breaker_rungs_total = 0
+            for r in d_rungs:
+                rg_role = full_grid[r]["role"]
+                if "BREAKER" in rg_role or "FRONT" in rg_role or "MT" in rg_role:
+                    breaker_rungs_active += 1
+            for idx in range(1, 8):
+                if "BREAKER" in full_grid[idx]["role"] or "FRONT" in full_grid[idx]["role"] or "MT" in full_grid[idx]["role"]:
+                    breaker_rungs_total += 1
+            
+            coverage_pct = round((breaker_rungs_active / breaker_rungs_total) * 100) if breaker_rungs_total > 0 else 0
+            coverage_label = f"{coverage_pct}%" if breaker_rungs_total > 0 else "N/A"
+
+            # 3. Budget clearance status
+            budget_delta = round(self.r_side_budget - total_catastrophic_risk, 2)
+            fits_budget = total_catastrophic_risk <= self.r_side_budget
+
             options[opt_key] = {
                 "name": cfg["name"],
+                "harvest_yield_per_rot": net_harvest_yield,
+                "breaker_coverage": coverage_label,
+                "fits_budget": fits_budget,
+                "budget_delta": budget_delta,
                 "desc": cfg["desc"],
                 "discount_rungs": d_rungs,
                 "premium_rungs": p_rungs,

@@ -19,9 +19,7 @@ class DataStore:
         self._running = True
 
         # In-memory fast tracking structures for 17 rungs and active cycles
-        # Dict[rung_index -> dict]
         self._levels: Dict[int, Dict[str, Any]] = {}
-        # Dict[cycle_id -> dict]
         self._active_cycles: Dict[str, Dict[str, Any]] = {}
 
         self._init_db()
@@ -40,10 +38,9 @@ class DataStore:
         # 1. Universal 17-Rung Level Touches Auditor
         cur.execute("""
             CREATE TABLE IF NOT EXISTS level_touches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
-                timeframe TEXT,
                 rung_index INTEGER,
+                timeframe TEXT,
                 rung_price REAL,
                 role TEXT,
                 side TEXT,
@@ -53,7 +50,8 @@ class DataStore:
                 touch_count INTEGER,
                 max_bounce_pts REAL,
                 max_penetration_pts REAL,
-                status TEXT
+                status TEXT,
+                PRIMARY KEY (session_id, rung_index)
             );
         """)
 
@@ -135,9 +133,22 @@ class DataStore:
             conn.commit()
         conn.close()
 
-    # ---------------------------------------------------------
-    # Public Non-blocking APIs (Called from live_runner loop)
-    # ---------------------------------------------------------
+    def _upsert_level(self, lvl: Dict[str, Any]):
+        """Queues an upsert for the level_touches table."""
+        sql = """
+            INSERT OR REPLACE INTO level_touches (
+                session_id, rung_index, timeframe, rung_price, role, side,
+                is_armed, first_touch_ts, last_touch_ts, touch_count,
+                max_bounce_pts, max_penetration_pts, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = (
+            lvl["session_id"], lvl["rung_index"], lvl["timeframe"], lvl["rung_price"],
+            lvl["role"], lvl["side"], lvl["is_armed"], lvl["first_touch_ts"],
+            lvl["last_touch_ts"], lvl["touch_count"], round(lvl["max_bounce_pts"], 2),
+            round(lvl["max_penetration_pts"], 2), lvl["state"]
+        )
+        self._queue.put((sql, params))
 
     def register_grid_levels(self, grid: Dict[int, Dict[str, Any]], session_id: str = "LIVE"):
         """Called when a container is armed or updated. Tracks all 17 levels."""
@@ -149,7 +160,7 @@ class DataStore:
             side = r.get("side", "LONG" if idx < 8 else ("SHORT" if idx > 8 else "MID"))
             is_armed = 1 if r.get("contracts", 0) > 0 else 0
 
-            self._levels[idx] = {
+            lvl_record = {
                 "session_id": session_id,
                 "timeframe": self.timeframe,
                 "rung_index": idx,
@@ -164,6 +175,8 @@ class DataStore:
                 "max_penetration_pts": 0.0,
                 "state": "UNTOUCHED"
             }
+            self._levels[idx] = lvl_record
+            self._upsert_level(lvl_record)
 
     def evaluate_level_touches(self, current_price: float, high: float, low: float):
         """Called on every price tick. Evaluates penetration and bounce on all 17 rungs."""
@@ -176,9 +189,7 @@ class DataStore:
             if px <= 0:
                 continue
 
-            # Check if this tick touches the level
             touched = (low <= px <= high)
-
             if touched:
                 lvl["touch_count"] += 1
                 lvl["last_touch_ts"] = now
@@ -186,14 +197,12 @@ class DataStore:
                     lvl["first_touch_ts"] = now
                     lvl["state"] = "TOUCHED"
 
-            # If level has been touched at least once, track penetration vs bounce
+            changed = False
             if lvl["first_touch_ts"] is not None:
                 if lvl["side"] == "LONG":
-                    # For longs, bounce is move above px; penetration is adverse move below px
                     penetration = max(0.0, px - low)
                     bounce = max(0.0, high - px)
                 elif lvl["side"] == "SHORT":
-                    # For shorts, bounce is move below px; penetration is adverse move above px
                     penetration = max(0.0, high - px)
                     bounce = max(0.0, px - low)
                 else:
@@ -202,8 +211,13 @@ class DataStore:
 
                 if bounce > lvl["max_bounce_pts"]:
                     lvl["max_bounce_pts"] = bounce
+                    changed = True
                 if penetration > lvl["max_penetration_pts"]:
                     lvl["max_penetration_pts"] = penetration
+                    changed = True
+
+            if touched or changed:
+                self._upsert_level(lvl)
 
     def update_price_excursion(self, current_price: float):
         """Called on every tick to update MAE/MFE for active armed trade cycles."""
@@ -225,7 +239,6 @@ class DataStore:
                     c["mfe_pts"] = favorable
 
             elif c["status"] == "POST_HARVEST_RUNNER":
-                # Tracking runner beyond 1/8 TP
                 if side == "LONG":
                     runner = current_price - c["target_tp"]
                 else:
@@ -235,7 +248,6 @@ class DataStore:
 
     def start_trade_cycle(self, cycle_id: str, instrument: str, rung_index: int, side: str,
                           entry_price: float, target_tp: float, stop_loss: float, contracts: int):
-        """Logs when a rung is filled and initiates an active excursion tracking cycle."""
         c = {
             "cycle_id": cycle_id,
             "instrument": instrument,
@@ -272,7 +284,6 @@ class DataStore:
         self._queue.put((sql, params))
 
     def record_harvest(self, cycle_id: str, harvest_price: float):
-        """Called when a 1/8 TP harvest order fills. Continues tracking excursion for post-harvest runner."""
         c = self._active_cycles.get(cycle_id)
         if c:
             c["harvest_ts"] = time.time()
@@ -285,7 +296,6 @@ class DataStore:
             self._queue.put((sql, (c["harvest_ts"], c["mae_pts"], c["mfe_pts"], cycle_id)))
 
     def close_trade_cycle(self, cycle_id: str, exit_price: float, final_status: str = "CLOSED"):
-        """Called on final fill, stop-out, or manual close."""
         c = self._active_cycles.pop(cycle_id, None)
         if c:
             now = time.time()
@@ -299,7 +309,6 @@ class DataStore:
 
     def log_order(self, order_id: str, instrument: str, side: str, price: float, qty: int,
                   order_type: str = "LIMIT", status: str = "PLACED", notes: str = ""):
-        """Asynchronously writes order lifecycle states."""
         sql = """
             INSERT OR REPLACE INTO orders_log (
                 order_id, timestamp, instrument, side, price, qty, order_type, status, notes
@@ -308,26 +317,10 @@ class DataStore:
         self._queue.put((sql, (order_id, time.time(), instrument, side, price, qty, order_type, status, notes)))
 
     def flush_level_touches_to_db(self):
-        """Flushes in-memory 17-rung stats into SQLite."""
         for idx, lvl in self._levels.items():
-            if lvl["touch_count"] > 0 or lvl["is_armed"]:
-                sql = """
-                    INSERT INTO level_touches (
-                        session_id, timeframe, rung_index, rung_price, role, side,
-                        is_armed, first_touch_ts, last_touch_ts, touch_count,
-                        max_bounce_pts, max_penetration_pts, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                params = (
-                    lvl["session_id"], lvl["timeframe"], lvl["rung_index"], lvl["rung_price"],
-                    lvl["role"], lvl["side"], lvl["is_armed"], lvl["first_touch_ts"],
-                    lvl["last_touch_ts"], lvl["touch_count"], round(lvl["max_bounce_pts"], 2),
-                    round(lvl["max_penetration_pts"], 2), lvl["state"]
-                )
-                self._queue.put((sql, params))
+            self._upsert_level(lvl)
 
     def close(self):
-        """Flushes remaining records and closes background thread."""
         self.flush_level_touches_to_db()
         self._running = False
         if self._worker.is_alive():
