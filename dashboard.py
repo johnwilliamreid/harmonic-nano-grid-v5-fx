@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Dict, Any, Callable, Optional, List
@@ -6,6 +7,7 @@ from datetime import datetime
 
 from src.core.grid_geometry import HarmonicGridGeometry, round_to_tick
 from src.core.directional_bias import DirectionalBiasCalculator
+from src.config import MULTIPLIERS, COMMISSION_PER_RT
 
 _PENDING_GEOM: Optional[HarmonicGridGeometry] = None
 _PENDING_PROPOSAL: Optional[Dict[str, Any]] = None
@@ -13,7 +15,18 @@ _PENDING_CARDS: Dict[str, Any] = {}
 
 _ON_ARM_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
 _ON_PROPOSE_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
+_ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
 
+def normalize_timeframe(tf_str: str) -> str:
+    s = str(tf_str).strip().upper()
+    mapping = {
+        "1M": "1m", "M1": "1m",
+        "4M": "4m", "M4": "4m",
+        "15M": "15m", "M15": "15m",
+        "1H": "1H", "1HR": "1H", "H1": "1H", "60M": "1H",
+        "4H": "4H", "H4": "4H", "240M": "4H"
+    }
+    return mapping.get(s, tf_str.lower())
 
 def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_high_front, brk_high_back):
     f_low_px = brk_low_front or (low + 0.3125 * (high - low))
@@ -43,12 +56,6 @@ def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_hi
         }
     }
 
-_ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
-
-def set_flatten_callback(cb: Callable[[], None]):
-    global _ON_FLATTEN_CALLBACK
-    _ON_FLATTEN_CALLBACK = cb
-
 def set_arm_callback(cb: Callable[[Dict[str, Any]], None]):
     global _ON_ARM_CALLBACK
     _ON_ARM_CALLBACK = cb
@@ -56,6 +63,10 @@ def set_arm_callback(cb: Callable[[Dict[str, Any]], None]):
 def set_propose_callback(cb: Callable[[Dict[str, Any]], None]):
     global _ON_PROPOSE_CALLBACK
     _ON_PROPOSE_CALLBACK = cb
+
+def set_flatten_callback(cb: Callable[[], None]):
+    global _ON_FLATTEN_CALLBACK
+    _ON_FLATTEN_CALLBACK = cb
 
 def log_telegram_message(direction: str, text: str, buttons: Optional[List[Any]] = None):
     global _TELEMETRY
@@ -99,7 +110,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --warn: #f59e0b;
     --purple: #a855f7;
   }
-  
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background-color: var(--bg);
@@ -116,9 +126,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 16px 20px;
     min-height: 100vh;
   }
-  
   .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
-  
   .glass {
     background: var(--surface);
     backdrop-filter: blur(14px);
@@ -126,7 +134,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--border);
     border-radius: 10px;
   }
-
   header {
     max-width: 1820px;
     margin: 0 auto 16px auto;
@@ -152,7 +159,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     animation: pulse-dot 2s infinite ease-in-out;
   }
   @keyframes pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
-
   .badge {
     padding: 3px 8px;
     border-radius: 6px;
@@ -166,7 +172,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .badge-warn { background: rgba(245, 158, 11, 0.15); color: var(--warn); border: 1px solid rgba(245, 158, 11, 0.3); }
   .badge-status-active { background: rgba(56, 189, 248, 0.15); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.35); }
   .badge-status-stopped { background: rgba(244, 63, 94, 0.15); color: var(--bear); border: 1px solid rgba(244, 63, 94, 0.3); }
-
   .btn {
     padding: 7px 14px;
     font-size: 11.5px;
@@ -180,14 +185,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     transition: all 0.15s ease;
   }
   .btn:hover { transform: translateY(-1px); }
-  .btn-primary { background: var(--accent); color: #04101e; font-weight: 800; }
-  .btn-primary:hover { box-shadow: 0 0 14px var(--accent-glow); }
+  .btn-primary { background: var(--warn); color: #000; font-weight: 800; }
   .btn-geom { background: rgba(56, 189, 248, 0.2); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.5); }
   .btn-snap { background: rgba(16, 185, 129, 0.2); color: var(--bull); border: 1px solid rgba(16, 185, 129, 0.5); }
   .btn-cancel { background: rgba(244, 63, 94, 0.15); color: var(--bear); border: 1px solid rgba(244, 63, 94, 0.35); }
+  .btn-flatten { background: #ef4444; color: #fff; font-weight: 800; }
+  .btn-flatten:hover { box-shadow: 0 0 15px rgba(239, 68, 68, 0.5); }
   .btn-aux { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border: 1px solid rgba(255, 255, 255, 0.1); }
-
-  /* FORM DRAWER */
   #range-entry-drawer {
     display: none;
     max-width: 1820px;
@@ -225,8 +229,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     outline: none;
   }
   .form-field input:focus { border-color: var(--accent); box-shadow: 0 0 8px rgba(56, 189, 248, 0.3); }
-
-  /* PROPOSAL REVIEW DRAWER */
   #proposal-drawer {
     display: none;
     max-width: 1820px;
@@ -246,8 +248,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     justify-content: space-between;
     gap: 8px;
   }
-
-  /* Layout */
+  #preview-matrix-container {
+    display: none;
+    margin: 14px 0;
+    padding: 12px 14px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+  }
   .layout-grid {
     display: grid;
     grid-template-columns: 360px 1fr 340px;
@@ -255,7 +263,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     max-width: 1820px;
     margin: 0 auto;
   }
-
   .card {
     padding: 14px 16px;
     margin-bottom: 14px;
@@ -272,7 +279,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     justify-content: space-between;
     align-items: center;
   }
-
   .stat-row {
     display: flex;
     justify-content: space-between;
@@ -283,8 +289,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .stat-row:last-child { border-bottom: none; }
   .stat-label { color: var(--text-muted); font-size: 11.5px; }
   .stat-val { font-weight: 600; }
-
-  /* Hero Card */
+  .bias-scores-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .bias-score-box {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
   .hero-card {
     border: 1px solid var(--border-bright);
     background: linear-gradient(180deg, rgba(20, 28, 44, 0.85) 0%, rgba(13, 18, 28, 0.9) 100%);
@@ -299,7 +315,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     text-shadow: 0 0 24px rgba(56, 189, 248, 0.35);
   }
   .hero-sd { font-size: 15px; font-weight: 700; text-align: center; margin-bottom: 10px; }
-
   .dispersion-track {
     height: 8px;
     background: rgba(255, 255, 255, 0.06);
@@ -320,13 +335,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     transition: left 0.15s ease-out;
     z-index: 2;
   }
-
-  /* Bias Card */
   .bias-score { font-size: 30px; font-weight: 800; text-align: center; margin: 4px 0; }
   .bias-bar-wrap { height: 7px; background: rgba(255, 255, 255, 0.06); border-radius: 4px; overflow: hidden; margin: 8px 0 12px 0; }
   .bias-bar-fill { height: 100%; transition: width 0.3s ease; }
-
-  /* Master Table */
   .matrix-card { overflow-x: auto; padding: 0; }
   .matrix-header { padding: 14px 18px; border-bottom: 1px solid var(--border); }
   table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -348,23 +359,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     white-space: nowrap;
   }
   tr:hover td { background: var(--surface-hover); }
-  
-  tr.probing-row { background: rgba(56, 189, 248, 0.12) !important; }
-  tr.probing-row td { border-top: 1px solid rgba(56, 189, 248, 0.4); border-bottom: 1px solid rgba(56, 189, 248, 0.4); }
-  
-  .probing-badge {
-    background: #0284c7;
-    color: #fff;
-    font-size: 9px;
-    font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 4px;
-    box-shadow: 0 0 10px rgba(56, 189, 248, 0.6);
-    animation: probing-pulse 1.6s infinite ease-in-out;
-    margin-left: 6px;
-  }
-  @keyframes probing-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.75; transform: scale(0.96); } }
-
   .tag-snapped {
     font-size: 9px;
     font-weight: 600;
@@ -375,18 +369,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-left: 4px;
     border: 1px solid rgba(56, 189, 248, 0.25);
   }
-
-  .pnl-pill {
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    display: inline-block;
-  }
-  .pnl-pos { background: rgba(16, 185, 129, 0.15); color: var(--bull); border: 1px solid rgba(16, 185, 129, 0.25); }
-  .pnl-neg { background: rgba(244, 63, 94, 0.15); color: var(--bear); border: 1px solid rgba(244, 63, 94, 0.25); }
-  .pnl-zero { color: var(--text-dim); }
-
   .status-tag {
     font-size: 10px;
     font-weight: 600;
@@ -401,8 +383,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .st-inval { background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.2); }
   .st-disarmed { background: rgba(244, 63, 94, 0.08); color: var(--text-dim); border: 1px dashed rgba(244, 63, 94, 0.3); }
   .st-exit { background: rgba(255, 255, 255, 0.04); color: var(--text-dim); border: 1px solid rgba(255, 255, 255, 0.08); }
-
-  /* Account bar */
   .account-grid {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -415,8 +395,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-radius: 8px;
     padding: 10px 8px;
   }
-
-  /* TG FEED */
   .tg-feed-container {
     max-height: 820px;
     overflow-y: auto;
@@ -442,20 +420,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--text-muted);
     margin-bottom: 6px;
   }
-  .tg-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 8px;
-  }
-  .tg-btn-chip {
-    font-size: 9.5px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: rgba(56, 189, 248, 0.12);
-    color: var(--accent);
-    border: 1px solid rgba(56, 189, 248, 0.25);
-  }
 </style>
 </head>
 <body>
@@ -465,167 +429,142 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="brand-title">
       <div class="brand-dot"></div>
       <span>HARMONIC NANO-GRID V4</span>
-      <span style="font-weight: 400; color: var(--text-muted);">| Structural Cockpit</span>
+      <span style="font-weight: 400; color: var(--text-muted);">| Structural Cockpit HUD</span>
     </div>
     <div style="color: var(--text-muted); font-size: 11px; margin-top: 3px;" class="mono">
-      Instrument: <span id="hdr-asset" style="color:var(--text); font-weight:700;">--</span> &bull;
-      Container: <span id="hdr-container" style="color:var(--text);">-- &mdash; --</span> (<span id="hdr-span">--</span> pts) &bull;
-      Eq (L8): <span id="hdr-eq" style="color:var(--accent); font-weight:700;">--</span>
+      Asset: <span id="hdr-asset" style="color:var(--text); font-weight:700;">--</span> &bull;
+      Boundaries: <span id="hdr-container" style="color:var(--text);">-- &mdash; --</span> (<span id="hdr-span">--</span> pts) &bull;
+      Median Eq (L8): <span id="hdr-eq" style="color:var(--warn); font-weight:700;">--</span>
     </div>
   </div>
   <div style="display: flex; gap: 8px; align-items: center;">
     <div style="display:flex; align-items:center; background:rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:6px; padding:2px;">
-      <button id="toggle-nnq" class="btn" style="padding:4px 8px; font-size:11px; background:var(--accent); color:#04101e;" onclick="switchActiveInstrument('NNQ')">NNQ</button>
+      <button id="toggle-nnq" class="btn" style="padding:4px 8px; font-size:11px; background:var(--warn); color:#000;" onclick="switchActiveInstrument('NNQ')">NNQ</button>
       <button id="toggle-mnq" class="btn" style="padding:4px 8px; font-size:11px; background:transparent; color:var(--text-muted);" onclick="switchActiveInstrument('MNQ')">MNQ</button>
     </div>
-    <button class="btn btn-primary" onclick="toggleRangeForm()">📐 Enter New Range</button>
-    <button class="btn btn-cancel" style="font-weight:800; border:1px solid rgba(244,63,94,0.5); background:rgba(244,63,94,0.25);" onclick="triggerEmergencyFlatten()">🚨 FLATTEN</button>
+    <button class="btn btn-primary" onclick="toggleRangeForm()">📐 ENTER NEW RANGE</button>
+    <button class="btn btn-flatten" onclick="submitFlatten()">🚨 FLATTEN</button>
     <span id="badge-venue" class="badge badge-demo">PAPER DEMO</span>
-    <span id="badge-status" class="badge badge-status-active">ARMED & QUOTING</span>
+    <span id="badge-status" class="badge badge-status-active">ARMED &amp; QUOTING</span>
   </div>
 </header>
 
-<!-- FORM DRAWER WITH LOCALSTORAGE PERSISTENCE -->
+<!-- FORM DRAWER -->
 <div id="range-entry-drawer" class="glass">
   <div class="card-title">
-    <span style="color:var(--accent); font-size:13px;">📐 FORMULATE NEW HARMONIC CONTAINER (STEPS 1–4)</span>
-    <button class="btn btn-aux" style="padding:3px 8px; font-size:10.5px;" onclick="autoFillBreakers()">⚡ Auto 3/8 &amp; 5/8 Geometric Breakers</button>
+    <span style="color:var(--warn); font-size:13px; font-weight:800;">📐 FORMULATE NEW HARMONIC CONTAINER</span>
+    <button class="btn btn-aux" style="padding:3px 8px; font-size:10.5px;" onclick="autoFillBreakers()">⚡ AUTO 3/8 &amp; 5/8 GEOMETRIC BREAKERS</button>
   </div>
   
-  <div class="form-section-title">Step 1: Instrument, Container Extents &amp; Risk Budget</div>
+  <div class="form-section-title">STEP 1: EXTENTS &amp; RISK LIMITS</div>
   <div class="form-row">
     <div class="form-field">
-      <label>Instrument</label>
+      <label>ASSET</label>
       <select id="inp-instrument" onchange="saveFormValues(); recalcSpecDetails();">
         <option value="NNQ">NNQ ($0.20/pt &bull; $1.94 RT)</option>
         <option value="MNQ">MNQ ($2.00/pt &bull; $1.94 RT)</option>
       </select>
     </div>
     <div class="form-field">
-      <label>Container Low</label>
-      <input type="number" id="inp-low" step="0.25" placeholder="e.g. 27000.00" oninput="saveFormValues(); recalcGeometryPreview();">
+      <label>LOW BOUNDARY</label>
+      <input type="number" id="inp-low" step="0.25" placeholder="e.g. 27615.75" oninput="saveFormValues();">
     </div>
     <div class="form-field">
-      <label>Container High</label>
-      <input type="number" id="inp-high" step="0.25" placeholder="e.g. 27100.00" oninput="saveFormValues(); recalcGeometryPreview();">
+      <label>HIGH BOUNDARY</label>
+      <input type="number" id="inp-high" step="0.25" placeholder="e.g. 28662.00" oninput="saveFormValues();">
     </div>
     <div class="form-field">
-      <label>Timeframe Tier</label>
+      <label>TIMEFRAME</label>
       <select id="inp-tf" onchange="saveFormValues()">
-        <option value="1m">1m (15m life)</option>
-        <option value="5m">5m (45m life)</option>
-        <option value="15m" selected>15m (3h life)</option>
-        <option value="1h">1h (12h life)</option>
-        <option value="4h">4h (48h life)</option>
+        <option value="1m">1m (16m lifespan &bull; 14m freeze)</option>
+        <option value="4m">4m (64m lifespan &bull; 56m freeze)</option>
+        <option value="15m">15m (4.0h lifespan &bull; 3.5h freeze)</option>
+        <option value="1H">1H (16.0h lifespan &bull; 14.0h freeze)</option>
+        <option value="4H" selected>4H (64.0h lifespan &bull; 56.0h freeze)</option>
       </select>
     </div>
     <div class="form-field">
-      <label>Risk Budget ($)</label>
-      <input type="number" id="inp-risk" step="25" value="200" oninput="saveFormValues()">
+      <label>SIDE RISK BUDGET ($)</label>
+      <input type="number" id="inp-risk" step="50" value="500" oninput="saveFormValues()">
     </div>
   </div>
 
-  <div class="form-section-title">Step 2: Breaker Edges &amp; Macro Bias</div>
+  <div class="form-section-title">STEP 2: CORE BREAKERS &amp; OVERLAYS</div>
   <div class="form-row">
     <div class="form-field">
-      <label>Demand Front (L5 Front Edge)</label>
-      <input type="number" id="inp-df" step="0.25" placeholder="e.g. 27025.00" oninput="saveFormValues()">
+      <label>DEMAND FRONT (L5 FRONT)</label>
+      <input type="number" id="inp-df" step="0.25" placeholder="e.g. 27950.00" oninput="saveFormValues()">
     </div>
     <div class="form-field">
-      <label>Demand Back (L3 Back Edge)</label>
-      <input type="number" id="inp-db" step="0.25" placeholder="e.g. 27000.00" oninput="saveFormValues()">
+      <label>DEMAND BACK (L3 BACK)</label>
+      <input type="number" id="inp-db" step="0.25" placeholder="e.g. 27615.75" oninput="saveFormValues()">
     </div>
     <div class="form-field">
-      <label>Supply Front (L11 Front Edge)</label>
-      <input type="number" id="inp-sf" step="0.25" placeholder="e.g. 27070.00" oninput="saveFormValues()">
+      <label>SUPPLY FRONT (L11 FRONT)</label>
+      <input type="number" id="inp-sf" step="0.25" placeholder="e.g. 28262.25" oninput="saveFormValues()">
     </div>
     <div class="form-field">
-      <label>Supply Back (L13 Back Edge)</label>
-      <input type="number" id="inp-sb" step="0.25" placeholder="e.g. 27100.00" oninput="saveFormValues()">
+      <label>SUPPLY BACK (L13 BACK)</label>
+      <input type="number" id="inp-sb" step="0.25" placeholder="e.g. 28662.00" oninput="saveFormValues()">
     </div>
     <div class="form-field">
-      <label>Macro Bias</label>
+      <label>TREND MULTIPLIER BIAS</label>
       <select id="inp-macro" onchange="saveFormValues()">
-        <option value="NEUTRAL" selected>⚖️ Neutral</option>
-        <option value="BULLISH">🐂 Bullish</option>
-        <option value="BEARISH">🐻 Bearish</option>
+        <option value="NEUTRAL" selected>⚖️ Neutral Balance</option>
+        <option value="BULLISH">🐂 Bullish Skew</option>
+        <option value="BEARISH">🐻 Bearish Skew</option>
       </select>
     </div>
   </div>
 
-  <div class="form-section-title">Step 3 &amp; 4: Recent Breaker, Mitigation &amp; Chrono Decay</div>
+  <div class="form-section-title">STEP 3 &amp; 4: RECENT BREAKER FORM &amp; AGE DECAY</div>
   <div class="form-row">
     <div class="form-field">
-      <label>Recent Breaker Formed</label>
+      <label>ACTIVE BREAKER FORMED</label>
       <select id="inp-dir" onchange="saveFormValues()">
-        <option value="BULLISH" selected>🟢 Bullish Demand Formed Most Recently</option>
-        <option value="BEARISH">🔴 Bearish Supply Formed Most Recently</option>
+        <option value="BEARISH" selected>🔴 Recent Bearish Supply</option>
+        <option value="BULLISH">🟢 Recent Bullish Demand</option>
       </select>
     </div>
     <div class="form-field">
-      <label>Mitigation Touches</label>
+      <label>EXISTING TOUCHES</label>
       <select id="inp-touches" onchange="saveFormValues()">
-        <option value="0" selected>0 Touches (Fresh Zone - Full Weight)</option>
+        <option value="0">0 Touches (Fresh Zone)</option>
         <option value="1">1 Touch (Tested)</option>
-        <option value="2">2 Touches (Mitigated)</option>
+        <option value="2" selected>2 Touches (Mitigated)</option>
         <option value="3">3+ Touches (Exhausted)</option>
       </select>
     </div>
-    <div class="form-field" style="border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px; background: rgba(56, 189, 248, 0.06);">
-      <label style="color:var(--accent); font-weight:800;">⏱️ Minutes Since Breaker Formed (T_elapsed)</label>
-      <input type="number" id="inp-elapsed-m" step="1" value="18" placeholder="e.g. 18" oninput="saveFormValues()">
+    <div class="form-field" style="border: 1px solid var(--warn); border-radius: 6px; padding: 6px 8px; background: rgba(245, 158, 11, 0.06);">
+      <label style="color:var(--warn); font-weight:800;">⏰ ELAPSED MINUTES SINCE FORMED</label>
+      <input type="number" id="inp-elapsed-m" step="10" value="600" oninput="saveFormValues()">
     </div>
   </div>
   
   <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
-    <button class="btn btn-cancel" onclick="toggleRangeForm()">Close</button>
-    <button class="btn btn-primary" onclick="submitNewRange()">⚡ Calculate &amp; Stage Proposals</button>
+    <button class="btn btn-cancel" onclick="toggleRangeForm()">DISMISS</button>
+    <button class="btn btn-primary" onclick="submitNewRange()">⚡ STAGE PROPOSAL</button>
   </div>
 </div>
 
-<!-- STAGED PROPOSAL REVIEW DRAWER -->
+<!-- PROPOSAL DRAWER -->
 <div id="proposal-drawer" class="glass">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
     <div style="display:flex; align-items:center; gap:8px;">
       <span style="color: var(--warn); font-size:13px; font-weight:800;">⚡ CONTAINER RE-ARM PROPOSAL READY FOR REVIEW</span>
       <span id="prop-draft-badge" class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent);">Draft: -- &mdash; --</span>
     </div>
-    <span id="prop-tf-badge" class="badge badge-warn">15m Tier</span>
+    <span id="prop-tf-badge" class="badge badge-warn">4H Tier</span>
   </div>
   <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">
-    Structural options computed for draft container. Per-Side Risk (<span class="mono">R_side</span>) compared directly to your <span id="prop-budget-label" class="mono" style="color:var(--text);">$200.00</span> risk budget:
+    Review profiles below. Click <b>Preview</b> to inspect rung sizes, prices, and risks before arming:
   </div>
 
-  <!-- MULTI-PROFILE CARDS CONTAINER -->
-  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin:14px 0;"></div>
-
-  <!-- PRE-COMMIT GRID PREVIEW TABLE -->
-  <div id="drawer-grid-preview" style="display:none; margin:14px 0; border:1px solid rgba(56,189,248,0.3); background:rgba(0,0,0,0.45); border-radius:8px; padding:12px; box-shadow:inset 0 0 15px rgba(0,0,0,0.5);">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <span style="font-size:12px; font-weight:800; color:var(--accent);">🔍 GRID MATRIX PREVIEW: <span id="preview-profile-title" style="color:#fff;">-</span></span>
-      <span id="preview-risk-summary" style="font-size:11px; color:var(--warn); font-family:monospace;">-</span>
-    </div>
-    <div style="max-height: 220px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-family: monospace; font-size: 11px;">
-      <table style="width: 100%; border-collapse: collapse; text-align: left;">
-        <thead>
-          <tr style="border-bottom: 1px solid rgba(255,255,255,0.15); color: var(--text-muted); position: sticky; top: 0; background: #0c101d;">
-            <th style="padding: 5px 8px;">RUNG</th>
-            <th style="padding: 5px 8px;">ACTION</th>
-            <th style="padding: 5px 8px;">PRICE</th>
-            <th style="padding: 5px 8px;">CONTRACTS</th>
-            <th style="padding: 5px 8px;">HARVEST (TP)</th>
-            <th style="padding: 5px 8px;">STATUS</th>
-          </tr>
-        </thead>
-        <tbody id="preview-table-body"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:8px 12px; border-radius:6px; font-size:11.5px;">
+  <!-- 1/8 HARVEST & DRAG STRIP -->
+  <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.08); padding:8px 14px; border-radius:6px; font-size:11.5px; margin-bottom:12px;">
     <div>
-      <span class="stat-label">1/8 TP Target:</span> <b id="prop-tp-pts" class="mono" style="color:var(--text);">-- pts</b>
-      (<span id="prop-tp-dlr" class="mono" style="color:var(--bull);">$--</span>)
+      <span class="stat-label">1/8 TP Target:</span> <b id="prop-tp-pts" class="mono" style="color:var(--text); font-weight:700;">-- pts</b>
+      (<span id="prop-tp-dlr" class="mono" style="color:var(--bull); font-weight:700;">$--</span>)
       &nbsp;&bull;&nbsp;
       <span class="stat-label">RT Commission:</span> <span id="prop-fee-dlr" class="mono" style="color:var(--text);">$1.94</span>
     </div>
@@ -634,35 +573,43 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- DIRECTIVE POSTURE SELECTOR & ACTIONS -->
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08); background:rgba(0,0,0,0.15); padding:10px 14px; border-radius:6px;">
-    <div style="display:flex; align-items:center; gap:16px;">
-      <span style="font-size:11px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Posture Choice:</span>
-      <label style="font-size:11.5px; display:flex; align-items:center; gap:6px; cursor:pointer;">
-        <input type="radio" name="posture" id="posture-directive" value="DIRECTIVE" checked>
-        <span id="label-directive-action" style="color:var(--bull); font-weight:700;">⚡ Follow Directive</span>
-      </label>
-      <label style="font-size:11.5px; display:flex; align-items:center; gap:6px; cursor:pointer;">
-        <input type="radio" name="posture" id="posture-override" value="TWO_SIDED">
-        <span style="color:var(--text-muted); font-weight:600;">⚖️ Override: Two-Sided Balanced</span>
-      </label>
+  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin:14px 0;"></div>
+
+  <div id="preview-matrix-container">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <b id="preview-matrix-title" style="color:var(--accent); font-size:12px;">🔍 GRID MATRIX PREVIEW</b>
+      <span id="preview-matrix-risk" class="mono" style="font-size:11px;">Side Risk: --</span>
     </div>
-    <div style="display:flex; gap:8px;">
-      <button class="btn btn-cancel" onclick="submitProposalChoice('CANCEL')">❌ Dismiss Draft</button>
-    </div>
+    <table style="width:100%; border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th>Rung</th>
+          <th>Side</th>
+          <th style="text-align:right;">Order Price</th>
+          <th style="text-align:center; color:var(--accent);">Contracts</th>
+          <th style="text-align:right;">1/8 TP</th>
+          <th style="text-align:right; color:var(--bear);">Risk $</th>
+          <th style="text-align:center;">Status</th>
+        </tr>
+      </thead>
+      <tbody id="preview-matrix-tbody"></tbody>
+    </table>
+  </div>
+
+  <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+    <button class="btn btn-cancel" onclick="submitProposalChoice('CANCEL')">❌ Dismiss Draft</button>
   </div>
 </div>
 
 <div class="layout-grid">
-  <!-- LEFT COLUMN -->
   <div>
     <div class="card glass hero-card">
       <div class="card-title">
-        <span>Live Tape &amp; Dispersion</span>
-        <span id="val-grid-coord" class="badge" style="background: rgba(56, 189, 248, 0.15); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.3);">L--.-</span>
+        <span>LIVE EXCURSION &amp; TAPE</span>
+        <span id="val-grid-coord" class="badge" style="background: rgba(245, 158, 11, 0.2); color: var(--warn); border: 1px solid rgba(245, 158, 11, 0.4);">L--.-</span>
       </div>
-      <div id="val-hero-price" class="hero-price mono" style="color: var(--accent);">--.--</div>
-      <div id="val-hero-sd" class="hero-sd mono">0.00σ from Eq</div>
+      <div id="val-hero-price" class="hero-price mono" style="color: var(--warn);">--.--</div>
+      <div id="val-hero-sd" class="hero-sd mono">+0.00σ (+0.00 pts)</div>
       
       <div class="dispersion-track">
         <div class="dispersion-mid"></div>
@@ -674,42 +621,66 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <span>L16 (+2.0σ)</span>
       </div>
 
-      <div class="stat-row"><span class="stat-label">Displacement from Eq</span><span id="val-eq-delta" class="stat-val mono">-- pts</span></div>
-      <div class="stat-row"><span class="stat-label">Active Structural Shelf</span><span id="val-shelf-name" class="stat-val" style="color:var(--accent);">--</span></div>
-      <div class="stat-row"><span class="stat-label">Harmonic Step (S_1/16)</span><span id="val-step-size" class="stat-val mono">-- pts</span></div>
+      <div class="stat-row"><span class="stat-label">Offset from Eq</span><span id="val-eq-delta" class="stat-val mono">-- pts</span></div>
+      <div class="stat-row"><span class="stat-label">Structural Shelf</span><span id="val-shelf-name" class="stat-val" style="color:var(--warn);">--</span></div>
+      <div class="stat-row"><span class="stat-label">Step (1/16 delta)</span><span id="val-step-size" class="stat-val mono">-- pts</span></div>
     </div>
 
     <div class="card glass">
       <div class="card-title">
-        <span>Session Lifecycle</span>
-        <span id="val-tf" class="badge" style="background: rgba(168, 85, 247, 0.15); color: var(--purple); border: 1px solid rgba(168, 85, 247, 0.3);">-- Tier</span>
+        <span>TIMEFRAME LIFECYCLE</span>
+        <span id="val-tf" class="badge badge-warn">4H TIER</span>
       </div>
-      <div class="stat-row"><span class="stat-label">Elapsed Session Time</span><span id="clock-elapsed" class="stat-val mono">00:00:00</span></div>
-      <div class="stat-row"><span class="stat-label">Countdown to T_freeze</span><span id="clock-freeze" class="stat-val mono" style="color:var(--warn);">--:--</span></div>
-      <div class="stat-row"><span class="stat-label">Countdown to T_flatten</span><span id="clock-flatten" class="stat-val mono" style="color:var(--bear);">--:--</span></div>
+      <div class="stat-row"><span class="stat-label">Elapsed Lifecycle</span><span id="clock-elapsed" class="stat-val mono">00:00:00</span></div>
+      <div class="stat-row"><span class="stat-label">T_freeze Countdown</span><span id="clock-freeze" class="stat-val mono" style="color:var(--warn);">--:--</span></div>
+      <div class="stat-row"><span class="stat-label">T_flatten Countdown</span><span id="clock-flatten" class="stat-val mono" style="color:var(--bear);">--:--</span></div>
     </div>
 
     <div class="card glass">
       <div class="card-title">
-        <span>Directional Bias Engine</span>
-        <span id="val-regime" class="badge" style="background: rgba(56, 189, 248, 0.15); color: var(--accent);">NEUTRAL</span>
+        <span>DIRECTIONAL BIAS ENGINE</span>
+        <span id="val-regime" class="badge" style="background: rgba(56, 189, 248, 0.15); color: var(--accent);">NEUTRAL_EQUILIBRIUM</span>
       </div>
-      <div id="val-bias" class="bias-score mono">0.00</div>
+      <div id="val-bias" class="bias-score mono" style="color:var(--warn);">+0.00</div>
       <div class="bias-bar-wrap"><div id="bias-bar" class="bias-bar-fill"></div></div>
-      <div class="stat-row"><span class="stat-label">Operating Directive</span><span id="val-directive" class="stat-val" style="font-size:11px;">TWO_SIDED</span></div>
-      <div class="stat-row"><span class="stat-label">Spatial CCR Score</span><span id="val-spatial-score" class="stat-val mono">0.00</span></div>
-      <div class="stat-row"><span class="stat-label">Chrono Decay Score</span><span id="val-chrono-score" class="stat-val mono">0.00</span></div>
+      <div class="stat-row"><span class="stat-label">Operating Directive</span><span id="val-directive" class="stat-val mono" style="font-size:11px;">TWO_SIDED_BALANCED</span></div>
       <div class="stat-row"><span class="stat-label">Open Corridor</span><span id="val-corridor-span" class="stat-val mono">-- pts</span></div>
+
+      <div class="bias-scores-grid">
+        <div class="bias-score-box">
+          <div style="font-size:9.5px; color:var(--text-muted); font-weight:700;">SPATIAL CCR</div>
+          <div id="val-spatial-score" class="mono" style="font-size:14px; font-weight:800; margin-top:2px; color:var(--accent);">0.00</div>
+        </div>
+        <div class="bias-score-box">
+          <div style="font-size:9.5px; color:var(--text-muted); font-weight:700;">CHRONO DECAY</div>
+          <div id="val-chrono-score" class="mono" style="font-size:14px; font-weight:800; margin-top:2px; color:var(--warn);">0.00</div>
+        </div>
+        <div class="bias-score-box">
+          <div style="font-size:9.5px; color:var(--text-muted); font-weight:700;">FORMATION ASYM</div>
+          <div id="val-formation-asym" class="mono" style="font-size:14px; font-weight:800; margin-top:2px;">0.00</div>
+        </div>
+        <div class="bias-score-box">
+          <div style="font-size:9.5px; color:var(--text-muted); font-weight:700;">STRUCTURAL INTEG</div>
+          <div id="val-structural-integ" class="mono" style="font-size:14px; font-weight:800; margin-top:2px;">0.00</div>
+        </div>
+        <div class="bias-score-box">
+          <div style="font-size:9.5px; color:var(--text-muted); font-weight:700;">TOUCH REACTION</div>
+          <div id="val-touch-reaction" class="mono" style="font-size:14px; font-weight:800; margin-top:2px;">0.00</div>
+        </div>
+        <div class="bias-score-box">
+          <div style="font-size:9.5px; color:var(--text-muted); font-weight:700;">PRICE DISPERSION</div>
+          <div id="val-price-dispersion" class="mono" style="font-size:14px; font-weight:800; margin-top:2px;">0.00</div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- MIDDLE COLUMN: MATRIX -->
   <div>
     <div class="card glass matrix-card">
       <div class="matrix-header">
         <div class="card-title" style="margin-bottom: 2px;">
-          <span style="font-size: 12px; color: var(--text);">Master 16-Step Matrix (L16 – L0)</span>
-          <span style="color:var(--text-muted); font-size:11px;" class="mono">Snapped to 0.25 CME Tick Precision</span>
+          <span style="font-size: 12px; color: var(--text);">MASTER 16-STEP MATRIX (L16 – L0)</span>
+          <span style="color:var(--text-muted); font-size:11px;" class="mono">SNAPPED TO CME TICK PRECISION</span>
         </div>
       </div>
       <table>
@@ -737,7 +708,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <div class="card glass" style="margin-top: 14px;">
       <div class="card-title">
-        <span>Live Account Telemetry</span>
+        <span>ACCOUNT TELEMETRY</span>
         <span id="val-account" class="mono" style="font-size:11px;">Account: --</span>
       </div>
       <div class="account-grid">
@@ -765,11 +736,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- RIGHT COLUMN: TELEGRAM -->
   <div>
     <div class="card glass" style="height: 100%;">
       <div class="card-title">
-        <span>💬 Telegram Feed</span>
+        <span>TELEGRAM EVENTS FEED</span>
         <span class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent);">LIVE SYNC</span>
       </div>
       <div id="tg-feed" class="tg-feed-container">
@@ -780,6 +750,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+let stagedCardsCache = [];
+
 function snapTick(val) {
   return (Math.round(val * 4.0) / 4.0).toFixed(2);
 }
@@ -798,70 +770,80 @@ function recalcSpecDetails() {
   const bMNQ = document.getElementById('toggle-mnq');
   if (bNNQ && bMNQ) {
     if (sym === 'NNQ') {
-      bNNQ.style.background = 'var(--accent)';
-      bNNQ.style.color = '#04101e';
+      bNNQ.style.background = 'var(--warn)';
+      bNNQ.style.color = '#000';
       bMNQ.style.background = 'transparent';
       bMNQ.style.color = 'var(--text-muted)';
     } else {
-      bMNQ.style.background = 'var(--accent)';
-      bMNQ.style.color = '#04101e';
+      bMNQ.style.background = 'var(--warn)';
+      bMNQ.style.color = '#000';
       bNNQ.style.background = 'transparent';
       bNNQ.style.color = 'var(--text-muted)';
     }
   }
 }
 
+function toggleRangeForm() {
+  const d = document.getElementById('range-entry-drawer');
+  if (!d) return;
+  const currentDisplay = window.getComputedStyle(d).display;
+  if (currentDisplay === 'none' || d.style.display === 'none' || !d.style.display) {
+    loadFormValues();
+    d.style.display = 'block';
+    d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else {
+    d.style.display = 'none';
+  }
+}
+
 function saveFormValues() {
-  const vals = {
-    instrument: document.getElementById('inp-instrument')?.value || 'NNQ',
-    low: document.getElementById('inp-low').value,
-    high: document.getElementById('inp-high').value,
-    tf: document.getElementById('inp-tf').value,
-    risk: document.getElementById('inp-risk').value,
-    df: document.getElementById('inp-df').value,
-    db: document.getElementById('inp-db').value,
-    sf: document.getElementById('inp-sf').value,
-    sb: document.getElementById('inp-sb').value,
-    macro: document.getElementById('inp-macro').value,
-    dir: document.getElementById('inp-dir').value,
-    touches: document.getElementById('inp-touches').value,
-    elapsed_m: document.getElementById('inp-elapsed-m').value
-  };
-  localStorage.setItem('nano_grid_last_range', JSON.stringify(vals));
+  try {
+    const vals = {
+      instrument: document.getElementById('inp-instrument')?.value || 'NNQ',
+      low: document.getElementById('inp-low')?.value || '',
+      high: document.getElementById('inp-high')?.value || '',
+      tf: document.getElementById('inp-tf')?.value || '4H',
+      risk: document.getElementById('inp-risk')?.value || '500',
+      df: document.getElementById('inp-df')?.value || '',
+      db: document.getElementById('inp-db')?.value || '',
+      sf: document.getElementById('inp-sf')?.value || '',
+      sb: document.getElementById('inp-sb')?.value || '',
+      macro: document.getElementById('inp-macro')?.value || 'NEUTRAL',
+      dir: document.getElementById('inp-dir')?.value || 'BEARISH',
+      touches: document.getElementById('inp-touches')?.value || '2',
+      elapsed_m: document.getElementById('inp-elapsed-m')?.value || '600'
+    };
+    localStorage.setItem('nano_grid_last_range', JSON.stringify(vals));
+  } catch(e) {
+    console.warn("Storage save error:", e);
+  }
 }
 
 function loadFormValues() {
   try {
     const saved = localStorage.getItem('nano_grid_last_range');
-    if (saved) {
-      const v = JSON.parse(saved);
-      if (v.instrument && document.getElementById('inp-instrument')) {
-        document.getElementById('inp-instrument').value = v.instrument;
-        recalcSpecDetails();
-      }
-      if (v.low) document.getElementById('inp-low').value = v.low;
-      if (v.high) document.getElementById('inp-high').value = v.high;
-      if (v.tf) document.getElementById('inp-tf').value = v.tf;
-      if (v.risk) document.getElementById('inp-risk').value = v.risk;
-      if (v.df) document.getElementById('inp-df').value = v.df;
-      if (v.db) document.getElementById('inp-db').value = v.db;
-      if (v.sf) document.getElementById('inp-sf').value = v.sf;
-      if (v.sb) document.getElementById('inp-sb').value = v.sb;
-      if (v.macro) document.getElementById('inp-macro').value = v.macro;
-      if (v.dir) document.getElementById('inp-dir').value = v.dir;
-      if (v.touches) document.getElementById('inp-touches').value = v.touches;
-      if (v.elapsed_m) document.getElementById('inp-elapsed-m').value = v.elapsed_m;
-    }
-  } catch(e) {}
-}
-
-function toggleRangeForm() {
-  const d = document.getElementById('range-entry-drawer');
-  if (d.style.display !== 'block') {
-    loadFormValues();
-    d.style.display = 'block';
-  } else {
-    d.style.display = 'none';
+    if (!saved) return;
+    const v = JSON.parse(saved);
+    const setVal = (id, val) => {
+      const el = document.getElementById(id);
+      if (el && val !== undefined && val !== null) el.value = val;
+    };
+    setVal('inp-instrument', v.instrument);
+    setVal('inp-low', v.low);
+    setVal('inp-high', v.high);
+    setVal('inp-tf', v.tf);
+    setVal('inp-risk', v.risk);
+    setVal('inp-df', v.df);
+    setVal('inp-db', v.db);
+    setVal('inp-sf', v.sf);
+    setVal('inp-sb', v.sb);
+    setVal('inp-macro', v.macro);
+    setVal('inp-dir', v.dir);
+    setVal('inp-touches', v.touches);
+    setVal('inp-elapsed-m', v.elapsed_m);
+    recalcSpecDetails();
+  } catch(e) {
+    console.warn("Storage load error:", e);
   }
 }
 
@@ -880,21 +862,8 @@ function autoFillBreakers() {
   saveFormValues();
 }
 
-function recalcGeometryPreview() {
-  const low = parseFloat(document.getElementById('inp-low').value);
-  const high = parseFloat(document.getElementById('inp-high').value);
-  if (!isNaN(low) && !isNaN(high) && high > low) {
-    const span = high - low;
-    if (!document.getElementById('inp-df').value) {
-      document.getElementById('inp-db').placeholder = snapTick(low);
-      document.getElementById('inp-df').placeholder = snapTick(low + span * 0.3125);
-      document.getElementById('inp-sf').placeholder = snapTick(high - span * 0.3125);
-      document.getElementById('inp-sb').placeholder = snapTick(high);
-    }
-  }
-}
-
 async function submitNewRange() {
+  saveFormValues();
   const instrument = document.getElementById('inp-instrument')?.value || 'NNQ';
   const low = parseFloat(document.getElementById('inp-low').value);
   const high = parseFloat(document.getElementById('inp-high').value);
@@ -903,45 +872,18 @@ async function submitNewRange() {
   const macro = document.getElementById('inp-macro').value;
   const dir = document.getElementById('inp-dir').value;
   const touches = parseInt(document.getElementById('inp-touches').value) || 0;
-  const elapsed_m = parseInt(document.getElementById('inp-elapsed-m').value) || 18;
+  const elapsed_m = parseInt(document.getElementById('inp-elapsed-m').value) || 600;
 
   if (isNaN(low) || isNaN(high) || low >= high) {
-    alert("❌ Invalid Container: High price must be strictly greater than Low price.");
+    alert("Please enter a valid container where Low is strictly less than High.");
     return;
   }
 
   const span = high - low;
-  const pEq = low + 0.5 * span;
-
-  const rawDf = document.getElementById('inp-df').value;
-  const rawDb = document.getElementById('inp-db').value;
-  const rawSf = document.getElementById('inp-sf').value;
-  const rawSb = document.getElementById('inp-sb').value;
-
-  const df = rawDf ? parseFloat(rawDf) : (low + span * 0.3125);
-  const db = rawDb ? parseFloat(rawDb) : low;
-  const sf = rawSf ? parseFloat(rawSf) : (high - span * 0.3125);
-  const sb = rawSb ? parseFloat(rawSb) : high;
-
-  // Strict Structural Boundary Checks
-  if (df <= low || df >= pEq) {
-    alert(`❌ Invalid Demand Front (${df.toFixed(2)}):\nMust sit strictly inside the discount half between Low (${low.toFixed(2)}) and Eq (${pEq.toFixed(2)}).\n\nTap "⚡ Auto 3/8 & 5/8" to auto-align or adjust your level.`);
-    return;
-  }
-  if (db < low || db > df) {
-    alert(`❌ Invalid Demand Back (${db.toFixed(2)}):\nMust sit between Low (${low.toFixed(2)}) and Demand Front (${df.toFixed(2)}).`);
-    return;
-  }
-  if (sf <= pEq || sf >= high) {
-    alert(`❌ Invalid Supply Front (${sf.toFixed(2)}):\nMust sit strictly inside the premium half between Eq (${pEq.toFixed(2)}) and High (${high.toFixed(2)}).\n\nTap "⚡ Auto 3/8 & 5/8" to auto-align or adjust your level.`);
-    return;
-  }
-  if (sb > high || sb < sf) {
-    alert(`❌ Invalid Supply Back (${sb.toFixed(2)}):\nMust sit between Supply Front (${sf.toFixed(2)}) and High (${high.toFixed(2)}).`);
-    return;
-  }
-
-  saveFormValues();
+  const df = parseFloat(document.getElementById('inp-df').value) || (low + span * 0.3125);
+  const db = parseFloat(document.getElementById('inp-db').value) || low;
+  const sf = parseFloat(document.getElementById('inp-sf').value) || (high - span * 0.3125);
+  const sb = parseFloat(document.getElementById('inp-sb').value) || high;
 
   const payload = {
     instrument: instrument,
@@ -968,19 +910,94 @@ async function submitNewRange() {
     const d = await res.json();
     if (d.ok) {
       document.getElementById('range-entry-drawer').style.display = 'none';
-    } else {
-      alert("❌ Range Rejected: " + (d.error || "Invalid parameters"));
+      refreshTelemetry();
     }
   } catch(e) {
     alert("Error submitting new range: " + e);
   }
 }
 
+async function submitProposalChoice(choice) {
+  try {
+    const res = await fetch('/api/arm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: choice, posture: 'DIRECTIVE' })
+    });
+    const d = await res.json();
+    if (d.ok) {
+      document.getElementById('proposal-drawer').style.display = 'none';
+      document.getElementById('preview-matrix-container').style.display = 'none';
+    }
+  } catch(e) {
+    alert("Error submitting arm command: " + e);
+  }
+}
+
+async function submitFlatten() {
+  if (!confirm("🚨 FLATTEN: Cancel all working orders and close any open position immediately?")) return;
+  try {
+    const res = await fetch('/api/flatten', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const d = await res.json();
+    console.log("[Cockpit] Flatten executed:", d);
+  } catch(e) {
+    alert("Error flattening: " + e);
+  }
+}
+
+function showGridPreview(key) {
+  const previewBox = document.getElementById('preview-matrix-container');
+  const tbody = document.getElementById('preview-matrix-tbody');
+  const titleElem = document.getElementById('preview-matrix-title');
+  const riskElem = document.getElementById('preview-matrix-risk');
+
+  const card = stagedCardsCache.find(c => c.key === key);
+  if (!card) return;
+
+  titleElem.textContent = `🔍 GRID MATRIX PREVIEW: ${card.title.toUpperCase()}`;
+  riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${card.side_risk.toFixed(2)}</span>`;
+
+  tbody.innerHTML = '';
+  const rows = card.grid_matrix || card.rungs_preview || [];
+
+  rows.forEach(r => {
+    const idx = r.index !== undefined ? r.index : r.idx;
+    const qty = r.contracts || 0;
+    const isActive = qty > 0;
+    const sideColor = r.side === 'LONG' ? 'var(--bull)' : (r.side === 'SHORT' ? 'var(--bear)' : 'var(--text-muted)');
+    const action = r.side === 'LONG' ? 'BUY (BID)' : (r.side === 'SHORT' ? 'SELL (ASK)' : 'EQUILIBRIUM');
+    const status = isActive ? '<span class="status-tag st-active">ARMED</span>' : '<span style="color:var(--text-dim);">STANDBY</span>';
+    const priceStr = r.price ? Number(r.price).toFixed(2) : '--';
+    const tpStr = r.tp ? Number(r.tp).toFixed(2) : '--';
+    const riskStr = r.risk_dollar && r.risk_dollar > 0 ? `$${Number(r.risk_dollar).toFixed(2)}` : '--';
+    const qtyStr = isActive ? `<b style="color:var(--warn); font-weight:800;">${qty} ct</b>` : '<span style="color:var(--text-dim);">-</span>';
+
+    const tr = document.createElement('tr');
+    tr.style.opacity = isActive ? '1.0' : '0.4';
+    tr.innerHTML = `
+      <td class="mono"><b>L${idx}</b></td>
+      <td style="color:${sideColor}; font-weight:700;">${action}</td>
+      <td class="mono" style="text-align:right; font-weight:700;">${priceStr}</td>
+      <td class="mono" style="text-align:center;">${qtyStr}</td>
+      <td class="mono" style="text-align:right;">${tpStr}</td>
+      <td class="mono" style="text-align:right; color:var(--bear);">${riskStr}</td>
+      <td style="text-align:center;">${status}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  previewBox.style.display = 'block';
+  previewBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function fmtPnl(val) {
-  if (Math.abs(val) < 0.001) return '<span class="pnl-zero">$0.00</span>';
-  const cls = val > 0 ? 'pnl-pos' : 'pnl-neg';
+  if (Math.abs(val) < 0.001) return '<span style="color:var(--text-dim);">$0.00</span>';
+  const color = val > 0 ? 'var(--bull)' : 'var(--bear)';
   const sgn = val > 0 ? '+' : '';
-  return `<span class="pnl-pill ${cls}">${sgn}$${val.toFixed(2)}</span>`;
+  return `<span class="mono" style="color:${color}; font-weight:700;">${sgn}$${val.toFixed(2)}</span>`;
 }
 
 function getStatusBadge(st) {
@@ -989,123 +1006,9 @@ function getStatusBadge(st) {
   if (u.includes('DISARMED')) return `<span class="status-tag st-disarmed">${st}</span>`;
   if (u.includes('HARVEST')) return `<span class="status-tag st-harvest">${st}</span>`;
   if (u.includes('STOPPED') || u.includes('STOP_OUT')) return `<span class="status-tag st-stopped">${st}</span>`;
-  if (u.includes('ACTIVE') || u.includes('RESTING') || u.includes('ARMED')) return `<span class="status-tag st-active">${st}</span>`;
+  if (u.includes('ACTIVE') || u.includes('RESTING') || u.includes('ARMED') || u.includes('WORKING')) return `<span class="status-tag st-active">${st}</span>`;
   if (u.includes('INVAL')) return `<span class="status-tag st-inval">${st}</span>`;
   return `<span class="status-tag st-exit">${st}</span>`;
-}
-
-
-async function triggerEmergencyFlatten() {
-  const confirmed = confirm("⚠️ EMERGENCY OVERRIDE: Are you sure you want to cancel all working orders and FLATTEN open positions at market?");
-  if (!confirmed) return;
-  try {
-    const res = await fetch('/api/flatten', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'WEB_DASHBOARD' })
-    });
-    const d = await res.json();
-    if (d.ok) {
-      alert("🚨 Emergency flatten executed. Orders canceled and positions liquidated.");
-    }
-  } catch(e) {
-    alert("❌ Flatten request failed: " + e);
-  }
-}
-
-
-let _CURRENT_STAGED_PROP = null;
-
-function previewProfileGrid(profileKey) {
-  if (!_CURRENT_STAGED_PROP) {
-    alert("No active proposal staged.");
-    return;
-  }
-  const prop = _CURRENT_STAGED_PROP;
-  const card = (prop.cards || []).find(c => c.key === profileKey);
-  const pDiv = document.getElementById('drawer-grid-preview');
-  const tbody = document.getElementById('preview-table-body');
-  
-  if (!pDiv || !tbody) {
-    console.error("Preview DOM elements not found");
-    return;
-  }
-
-  document.getElementById('preview-profile-title').textContent = card ? card.title : profileKey;
-  document.getElementById('preview-risk-summary').textContent = card ? `Risk: $${card.side_risk.toFixed(2)} (Budget: $${prop.risk_budget || 200})` : '';
-
-  const low = parseFloat(prop.draft_low || 0);
-  const high = parseFloat(prop.draft_high || 0);
-  const span = high - low;
-  const s_step = span / 16.0;
-  const s_harvest = parseFloat(prop.tp_pts || (span / 8.0));
-
-  const discSet = new Set((card && card.disc) ? card.disc : []);
-  const premSet = new Set((card && card.prem) ? card.prem : []);
-
-  let html = '';
-  for (let i = 16; i >= 0; i--) {
-    const px = (low + i * s_step).toFixed(2);
-    let action = '<span style="color:var(--text-dim);">-</span>';
-    let tp = '<span style="color:var(--text-dim);">-</span>';
-    let contracts = '<span style="color:var(--text-dim);">-</span>';
-    let status = '<span style="color:var(--text-muted); font-size:10px;">EXT RUNWAY</span>';
-    let rowBg = 'transparent';
-
-    if (i < 8) {
-      action = '<span style="color:var(--bull); font-weight:700;">BUY (BID)</span>';
-      if (discSet.has(i)) {
-        contracts = '<b style="color:#fff;">1 ct</b>';
-        tp = `<span style="color:var(--bull);">${(parseFloat(px) + s_harvest).toFixed(2)}</span>`;
-        status = '<span class="badge" style="background:rgba(16,185,129,0.18); color:var(--bull); font-size:9.5px;">ARMED</span>';
-        rowBg = 'rgba(16,185,129,0.08)';
-      }
-    } else if (i > 8) {
-      action = '<span style="color:var(--bear); font-weight:700;">SELL (ASK)</span>';
-      if (premSet.has(i)) {
-        contracts = '<b style="color:#fff;">1 ct</b>';
-        tp = `<span style="color:var(--bear);">${(parseFloat(px) - s_harvest).toFixed(2)}</span>`;
-        status = '<span class="badge" style="background:rgba(244,63,94,0.18); color:var(--bear); font-size:9.5px;">ARMED</span>';
-        rowBg = 'rgba(244,63,94,0.08)';
-      }
-    } else {
-      action = '<span style="color:var(--accent); font-weight:700;">EQUILIBRIUM</span>';
-      status = '<span class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent); font-size:9.5px;">L8 P_EQ</span>';
-      rowBg = 'rgba(56,189,248,0.05)';
-    }
-
-    html += `
-      <tr style="border-bottom: 1px solid rgba(255,255,255,0.06); background: ${rowBg};">
-        <td style="padding: 5px 10px; font-weight:bold; color:var(--text);">L${i}</td>
-        <td style="padding: 5px 10px;">${action}</td>
-        <td style="padding: 5px 10px; font-weight:600; color:#fff;">${px}</td>
-        <td style="padding: 5px 10px;">${contracts}</td>
-        <td style="padding: 5px 10px;">${tp}</td>
-        <td style="padding: 5px 10px;">${status}</td>
-      </tr>
-    `;
-  }
-
-  tbody.innerHTML = html;
-  pDiv.style.display = 'block';
-  pDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-async function submitProposalChoice(choice) {
-  try {
-    const posture = document.querySelector('input[name="posture"]:checked')?.value || 'DIRECTIVE';
-    const res = await fetch('/api/arm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: choice, posture: posture })
-    });
-    const d = await res.json();
-    if (d.ok) {
-      document.getElementById('proposal-drawer').style.display = 'none';
-    }
-  } catch(e) {
-    alert("Error submitting arm command: " + e);
-  }
 }
 
 async function refreshTelemetry() {
@@ -1113,57 +1016,34 @@ async function refreshTelemetry() {
     const res = await fetch('/api/telemetry');
     const d = await res.json();
 
-    // Telegram Feed Render
-    const feedContainer = document.getElementById('tg-feed');
-    if (d.telegram_feed && d.telegram_feed.length > 0) {
-      feedContainer.innerHTML = d.telegram_feed.map(m => `
-        <div class="tg-bubble ${m.direction === 'OUT' ? 'tg-bubble-out' : 'tg-bubble-in'}">
-          <div class="tg-meta">
-            <span>${m.direction === 'OUT' ? '🤖 DAEMON DISPATCH' : '👤 USER CALLBACK'}</span>
-            <span class="mono">${m.time}</span>
-          </div>
-          <div>${m.text}</div>
-          ${m.buttons && m.buttons.length ? `
-            <div class="tg-buttons">
-              ${m.buttons.map(b => `<span class="tg-btn-chip">[ ${b} ]</span>`).join('')}
-            </div>` : ''}
-        </div>
-      `).join('');
-    }
-
-    // Staged Proposal Drawer Handling
     const pDrawer = document.getElementById('proposal-drawer');
     const prop = d.staged_proposal;
     if (prop && prop.active) {
+      stagedCardsCache = prop.cards || [];
       pDrawer.style.display = 'block';
-      _CURRENT_STAGED_PROP = prop;
       document.getElementById('prop-tf-badge').textContent = `${prop.tf} Tier`;
       document.getElementById('prop-draft-badge').textContent = `Draft: ${(prop.draft_low || 0).toFixed(2)} — ${(prop.draft_high || 0).toFixed(2)} (${(prop.draft_span || 0).toFixed(2)} pts)`;
-      document.getElementById('prop-budget-label').textContent = `$${(prop.risk_budget || 200).toFixed(2)}`;
 
-      document.getElementById('prop-tp-pts').textContent = `${(prop.tp_pts || 0).toFixed(2)} pts`;
-      document.getElementById('prop-tp-dlr').textContent = `$${(prop.tp_dlr || 0).toFixed(2)}`;
-      document.getElementById('prop-fee-dlr').textContent = `$${(prop.fee_per_rt || 1.94).toFixed(2)}`;
+      const tpPtsEl = document.getElementById('prop-tp-pts');
+      const tpDlrEl = document.getElementById('prop-tp-dlr');
+      const feeDlrEl = document.getElementById('prop-fee-dlr');
+      const dragBadge = document.getElementById('prop-drag-badge');
 
-      const dragPct = prop.fee_drag_pct || 0;
-      const dBadge = document.getElementById('prop-drag-badge');
-      dBadge.textContent = `FEE DRAG: ${dragPct.toFixed(1)}%`;
-      if (dragPct > 20) {
-        dBadge.style.background = 'rgba(244,63,94,0.2)';
-        dBadge.style.color = 'var(--bear)';
-      } else if (dragPct > 12) {
-        dBadge.style.background = 'rgba(245,158,11,0.2)';
-        dBadge.style.color = 'var(--warn)';
-      } else {
-        dBadge.style.background = 'rgba(16,185,129,0.15)';
-        dBadge.style.color = 'var(--bull)';
+      if (tpPtsEl) tpPtsEl.textContent = `${(prop.tp_pts || 0).toFixed(2)} pts`;
+      if (tpDlrEl) tpDlrEl.textContent = `$${(prop.tp_dlr || 0).toFixed(2)}`;
+      if (feeDlrEl) feeDlrEl.textContent = `$${(prop.fee_per_rt || 1.94).toFixed(2)}`;
+
+      if (dragBadge) {
+        const drag = prop.fee_drag_pct || 0;
+        dragBadge.textContent = `FEE DRAG: ${drag.toFixed(1)}%`;
+        dragBadge.style.color = drag > 20 ? 'var(--bear)' : (drag > 12 ? 'var(--warn)' : 'var(--bull)');
+        dragBadge.style.background = drag > 20 ? 'rgba(244,63,94,0.15)' : (drag > 12 ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)');
       }
 
-      // Render multi-profile proposal cards
       const cardsContainer = document.getElementById('proposal-cards-container');
       if (cardsContainer && prop.cards) {
         cardsContainer.innerHTML = prop.cards.map(c => {
-          const budgetOk = c.side_risk <= (prop.risk_budget || 200);
+          const budgetOk = c.side_risk <= (prop.risk_budget || 500);
           const riskColor = budgetOk ? 'var(--bull)' : 'var(--bear)';
           const budgetTag = budgetOk ? '<span class="badge" style="background:rgba(16,185,129,0.15); color:var(--bull); font-size:9px;">FITS BUDGET</span>' : '<span class="badge" style="background:rgba(244,63,94,0.15); color:var(--bear); font-size:9px;">EXCEEDS</span>';
           return `
@@ -1173,44 +1053,37 @@ async function refreshTelemetry() {
                   <b style="color:var(--text); font-size:12px;">${c.title}</b>
                   ${budgetTag}
                 </div>
-                <div class="stat-row"><span class="stat-label">Rungs Quoted</span><span class="stat-val mono">${c.rungs}</span></div>
-                <div class="stat-row"><span class="stat-label">Per-Side Risk (R_side)</span><span class="stat-val mono" style="color:${riskColor}; font-weight:700;">$${c.side_risk.toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">/ $${prop.risk_budget}</span></span></div>
-                <div class="stat-row"><span class="stat-label">Two-Sided Sum</span><span class="stat-val mono" style="color:var(--text-muted);">$${c.total_risk.toFixed(2)}</span></div>
+                <div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
+                <div class="stat-row"><span class="stat-label">Per-Side Risk</span><span class="stat-val mono" style="color:${riskColor}; font-weight:700;">$${c.side_risk.toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">/ $${prop.risk_budget}</span></span></div>
+                <div class="stat-row"><span class="stat-label">Avg Yield / Rot</span><span class="stat-val mono" style="color:var(--bull); font-weight:700;">+$${Number(c.harvest_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">($${c.min_rot_yield}–$${c.max_rot_yield})</span></span></div>
+                <div class="stat-row"><span class="stat-label">Total Side Yield</span><span class="stat-val mono" style="color:var(--bull); font-weight:800;">+$${Number(c.side_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">(${c.side_cts || 0} ct)</span></span></div>
+                <div class="stat-row"><span class="stat-label">Two-Sided Risk</span><span class="stat-val mono" style="color:var(--text-muted);">$${c.total_risk.toFixed(2)}</span></div>
               </div>
               <div style="display:flex; gap:6px; margin-top:8px;">
-                <button type="button" class="btn btn-aux" style="flex:1; justify-content:center; padding:6px 0; font-size:11px;" onclick="previewProfileGrid('${c.key}')">
+                <button class="btn btn-aux" style="flex:1; justify-content:center; padding:6px 0;" onclick="showGridPreview('${c.key}')">
                   🔍 Preview
                 </button>
-                <button type="button" class="btn ${c.key === 'SNAPPED' ? 'btn-snap' : 'btn-geom'}" style="flex:1.4; justify-content:center; padding:6px 0; font-size:11px;" onclick="submitProposalChoice('${c.key}')">
-                  ⚡ Commit &amp; Arm
+                <button class="btn ${c.key === 'SNAPPED' ? 'btn-snap' : 'btn-geom'}" style="flex:2; justify-content:center; padding:6px 0;" onclick="submitProposalChoice('${c.key}')">
+                  ⚡ Arm
                 </button>
               </div>
             </div>
           `;
         }).join('');
       }
-
-      // Dynamic directive label
-      const dirText = d.bias && d.bias.directive ? d.bias.directive : 'TWO_SIDED_BALANCED';
-      const dirLabel = document.getElementById('label-directive-action');
-      if (dirLabel) {
-        if (dirText.includes('DISARM_SHORTS')) dirLabel.innerHTML = '⚡ Follow Directive: <b style="color:var(--bull);">Longs Only (Disarm Shorts)</b>';
-        else if (dirText.includes('DISARM_LONGS')) dirLabel.innerHTML = '⚡ Follow Directive: <b style="color:var(--bear);">Shorts Only (Disarm Longs)</b>';
-        else dirLabel.innerHTML = '⚡ Follow Directive: <b style="color:var(--accent);">Balanced Neutral</b>';
-      }
     } else {
       pDrawer.style.display = 'none';
     }
 
-    const low = d.container.low || 0;
-    const high = d.container.high || 0;
-    const pEq = d.container.p_eq || 0;
-    const sStep = d.container.s_step || 1;
+    const low = d.container?.low || 0;
+    const high = d.container?.high || 0;
+    const pEq = d.container?.p_eq || 0;
+    const sStep = d.container?.s_step || 1;
     const liveP = d.live_price || 0;
 
     document.getElementById('hdr-asset').textContent = d.instrument || 'NNQ';
     document.getElementById('hdr-container').textContent = `${low.toFixed(2)} — ${high.toFixed(2)}`;
-    document.getElementById('hdr-span').textContent = (d.container.delta_p || 0).toFixed(2);
+    document.getElementById('hdr-span').textContent = (d.container?.delta_p || 0).toFixed(2);
     document.getElementById('hdr-eq').textContent = pEq.toFixed(2);
     document.getElementById('val-account').textContent = `Account: ${d.account} (${d.venue})`;
 
@@ -1218,77 +1091,75 @@ async function refreshTelemetry() {
     vBadge.textContent = d.venue && d.venue.includes('LIVE') ? '🚨 LIVE CME' : '🛡️ PAPER DEMO';
     vBadge.className = 'badge ' + (d.venue && d.venue.includes('LIVE') ? 'badge-live' : 'badge-demo');
 
-    // Hero Price & SD
-    const heroPriceElem = document.getElementById('val-hero-price');
-    const heroSdElem = document.getElementById('val-hero-sd');
-    const heroCoordElem = document.getElementById('val-grid-coord');
-    const eqDeltaElem = document.getElementById('val-eq-delta');
-    const shelfNameElem = document.getElementById('val-shelf-name');
-    const dispMarker = document.getElementById('val-disp-marker');
-    document.getElementById('val-step-size').textContent = `${sStep.toFixed(2)} pts`;
-
     if (liveP > 0) {
-      heroPriceElem.textContent = liveP.toFixed(2);
+      document.getElementById('val-hero-price').textContent = liveP.toFixed(2);
       const deltaEq = liveP - pEq;
-      const sdVal = (d.container.delta_p > 0) ? (deltaEq / (d.container.delta_p / 4.0)) : 0;
+      const sdVal = (d.container?.delta_p > 0) ? (deltaEq / (d.container.delta_p / 4.0)) : 0;
       const harmonicRung = 8.0 + (deltaEq / sStep);
 
-      heroSdElem.textContent = `${sdVal >= 0 ? '+' : ''}${sdVal.toFixed(2)}σ (${deltaEq >= 0 ? '+' : ''}${deltaEq.toFixed(2)} pts)`;
-      heroSdElem.style.color = sdVal > 0.4 ? 'var(--bear)' : (sdVal < -0.4 ? 'var(--bull)' : 'var(--accent)');
-      heroCoordElem.textContent = `L${harmonicRung.toFixed(2)}`;
-
-      eqDeltaElem.textContent = `${deltaEq >= 0 ? '+' : ''}${deltaEq.toFixed(2)} pts (${(deltaEq/0.25).toFixed(0)} ticks)`;
+      document.getElementById('val-hero-sd').textContent = `${sdVal >= 0 ? '+' : ''}${sdVal.toFixed(2)}σ (${deltaEq >= 0 ? '+' : ''}${deltaEq.toFixed(2)} pts)`;
+      document.getElementById('val-grid-coord').textContent = `L${harmonicRung.toFixed(2)}`;
+      document.getElementById('val-eq-delta').textContent = `${deltaEq >= 0 ? '+' : ''}${deltaEq.toFixed(2)} pts (${(deltaEq/0.25).toFixed(0)} ticks)`;
 
       const pctDisp = Math.max(0, Math.min(100, ((liveP - low) / (high - low)) * 100));
-      dispMarker.style.left = `${pctDisp}%`;
+      document.getElementById('val-disp-marker').style.left = `${pctDisp}%`;
 
-      if (harmonicRung < 1) shelfNameElem.textContent = 'Below Lower Invalidation (L0)';
-      else if (harmonicRung < 3) shelfNameElem.textContent = 'Discount Sweep Liquidity (L1–L2)';
-      else if (harmonicRung < 6) shelfNameElem.textContent = 'Bullish Breaker Absorption (L3–L5)';
-      else if (harmonicRung < 8) shelfNameElem.textContent = 'Discount Transit Corridor (L6–L7)';
-      else if (harmonicRung < 9) shelfNameElem.textContent = 'Median Equilibrium Zone (L8)';
-      else if (harmonicRung < 11) shelfNameElem.textContent = 'Premium Transit Corridor (L9–L10)';
-      else if (harmonicRung < 14) shelfNameElem.textContent = 'Bearish Breaker Absorption (L11–L13)';
-      else if (harmonicRung < 16) shelfNameElem.textContent = 'Premium Sweep Liquidity (L14–L15)';
-      else shelfNameElem.textContent = 'Above Upper Invalidation (L16)';
+      const shelfElem = document.getElementById('val-shelf-name');
+      if (harmonicRung < 1) shelfElem.textContent = 'Below Lower Invalidation (L0)';
+      else if (harmonicRung < 3) shelfElem.textContent = 'Discount Sweep Liquidity (L1–L2)';
+      else if (harmonicRung < 6) shelfElem.textContent = 'Bullish Breaker Absorption (L3–L5)';
+      else if (harmonicRung < 8) shelfElem.textContent = 'Discount Transit Corridor (L6–L7)';
+      else if (harmonicRung < 9) shelfElem.textContent = 'Median Equilibrium Zone (L8)';
+      else if (harmonicRung < 11) shelfElem.textContent = 'Premium Transit Corridor (L9–L10)';
+      else if (harmonicRung < 14) shelfElem.textContent = 'Bearish Breaker Absorption (L11–L13)';
+      else if (harmonicRung < 16) shelfElem.textContent = 'Premium Sweep Liquidity (L14–L15)';
+      else shelfElem.textContent = 'Upper Invalidation (L16)';
     }
 
-    // Lifecycle
-    document.getElementById('val-tf').textContent = `${d.lifecycle.tf} Tier`;
-    document.getElementById('clock-elapsed').textContent = d.lifecycle.elapsed_str;
-    document.getElementById('clock-freeze').textContent = d.lifecycle.to_freeze_str;
-    document.getElementById('clock-flatten').textContent = d.lifecycle.to_flatten_str;
+    document.getElementById('val-step-size').textContent = `${sStep.toFixed(2)} pts`;
 
-    const sBadge = document.getElementById('badge-status');
-    sBadge.textContent = d.lifecycle.status;
-    if (d.lifecycle.status === 'HARVEST_ONLY_FREEZE') sBadge.className = 'badge badge-warn';
-    else if (d.lifecycle.status && d.lifecycle.status.includes('STOPPED')) sBadge.className = 'badge badge-status-stopped';
-    else sBadge.className = 'badge badge-status-active';
+    if (d.lifecycle) {
+      document.getElementById('val-tf').textContent = `${(d.lifecycle.tf || '4H').toUpperCase()} TIER`;
+      document.getElementById('clock-elapsed').textContent = d.lifecycle.elapsed_str || '00:00:00';
+      document.getElementById('clock-freeze').textContent = d.lifecycle.to_freeze_str || '--:--';
+      document.getElementById('clock-flatten').textContent = d.lifecycle.to_flatten_str || '--:--';
 
-    // Bias Engine
+      const sBadge = document.getElementById('badge-status');
+      sBadge.textContent = d.lifecycle.status || 'ACTIVE_QUOTING';
+      if (d.lifecycle.status === 'HARVEST_ONLY_FREEZE') sBadge.className = 'badge badge-warn';
+      else if (d.lifecycle.status && d.lifecycle.status.includes('STOPPED')) sBadge.className = 'badge badge-status-stopped';
+      else sBadge.className = 'badge badge-status-active';
+    }
+
     const bias = d.bias || {};
+    const sBias = bias.s_bias ?? 0;
     const bElem = document.getElementById('val-bias');
-    const sBias = bias.s_bias || 0;
-    bElem.textContent = (sBias > 0 ? '+' : '') + sBias.toFixed(2);
-    bElem.style.color = sBias > 15 ? 'var(--bull)' : (sBias < -15 ? 'var(--bear)' : 'var(--accent)');
+    bElem.textContent = (sBias > 0 ? '+' : '') + Number(sBias).toFixed(2);
+    bElem.style.color = sBias > 15 ? 'var(--bull)' : (sBias < -15 ? 'var(--bear)' : 'var(--warn)');
 
     const bar = document.getElementById('bias-bar');
     const pct = Math.max(0, Math.min(100, (sBias + 100) / 2));
     bar.style.width = pct + '%';
-    bar.style.background = sBias > 15 ? 'var(--bull)' : (sBias < -15 ? 'var(--bear)' : 'var(--accent)');
+    bar.style.background = sBias > 15 ? 'var(--bull)' : (sBias < -15 ? 'var(--bear)' : 'var(--warn)');
 
-    const rBadge = document.getElementById('val-regime');
-    rBadge.textContent = bias.regime || 'NEUTRAL';
-    rBadge.style.background = (bias.regime || '').includes('BULL') ? 'var(--bull-glow)' : ((bias.regime || '').includes('BEAR') ? 'var(--bear-glow)' : 'var(--accent-glow)');
+    document.getElementById('val-regime').textContent = bias.regime || 'NEUTRAL_EQUILIBRIUM';
+    document.getElementById('val-directive').textContent = bias.directive || 'TWO_SIDED_BALANCED';
+    document.getElementById('val-corridor-span').textContent = `${(bias.open_corridor || 0).toFixed(2)} pts`;
 
-    document.getElementById('val-directive').textContent = bias.directive || 'TWO_SIDED';
-    document.getElementById('val-spatial-score').textContent = `${((bias.s_spatial || 0) > 0 ? '+' : '')}${(bias.s_spatial || 0).toFixed(2)}`;
-    document.getElementById('val-chrono-score').textContent = `${((bias.s_chrono || 0) > 0 ? '+' : '')}${(bias.s_chrono || 0).toFixed(2)}`;
-    
-    const corrSpan = document.getElementById('val-corridor-span');
-    corrSpan.textContent = `${(bias.open_corridor || 0).toFixed(2)} pts` + (bias.is_squeeze ? ' ⚠️ SQUEEZE' : '');
+    const spat = bias.s_spatial ?? 0;
+    const chron = bias.s_chrono ?? 0;
+    const form = bias.s_formation ?? 0;
+    const integ = bias.s_integrity ?? 0;
+    const touch = bias.s_touch_reaction ?? 0;
+    const disp = bias.s_price_disp ?? 0;
 
-    // Account Bar
+    document.getElementById('val-spatial-score').textContent = `${spat > 0 ? '+' : ''}${Number(spat).toFixed(2)}`;
+    document.getElementById('val-chrono-score').textContent = `${chron > 0 ? '+' : ''}${Number(chron).toFixed(2)}`;
+    document.getElementById('val-formation-asym').textContent = `${form > 0 ? '+' : ''}${Number(form).toFixed(2)}`;
+    document.getElementById('val-structural-integ').textContent = `${integ > 0 ? '+' : ''}${Number(integ).toFixed(2)}`;
+    document.getElementById('val-touch-reaction').textContent = `${touch > 0 ? '+' : ''}${Number(touch).toFixed(2)}`;
+    document.getElementById('val-price-dispersion').textContent = `${disp > 0 ? '+' : ''}${Number(disp).toFixed(2)}`;
+
     document.getElementById('val-net-pos').textContent = d.position;
     document.getElementById('val-orders').textContent = d.active_orders;
     
@@ -1308,20 +1179,23 @@ async function refreshTelemetry() {
     tElem.textContent = `${tot >= 0 ? '+' : ''}$${tot.toFixed(2)}`;
     tElem.style.color = tot >= 0 ? 'var(--bull)' : 'var(--bear)';
 
-    // Matrix Table (Inverted DOM order: L16 -> L0)
+    const feedContainer = document.getElementById('tg-feed');
+    if (d.telegram_feed && d.telegram_feed.length > 0) {
+      feedContainer.innerHTML = d.telegram_feed.map(m => `
+        <div class="tg-bubble ${m.direction === 'OUT' ? 'tg-bubble-out' : 'tg-bubble-in'}">
+          <div class="tg-meta">
+            <span>${m.direction === 'OUT' ? '🤖 DAEMON' : '👤 USER'}</span>
+            <span class="mono">${m.time}</span>
+          </div>
+          <div>${m.text}</div>
+        </div>
+      `).join('');
+    }
+
     const rawGrid = d.grid || [];
     const grid = [...rawGrid].sort((a, b) => b.index - a.index);
     const tbody = document.getElementById('grid-tbody');
     tbody.innerHTML = '';
-
-    let closestRungIdx = -1;
-    if (liveP > 0) {
-      let minDiff = 999999;
-      grid.forEach(r => {
-        const diff = Math.abs(r.price - liveP);
-        if (diff < minDiff) { minDiff = diff; closestRungIdx = r.index; }
-      });
-    }
 
     grid.forEach(r => {
       const tr = document.createElement('tr');
@@ -1334,24 +1208,10 @@ async function refreshTelemetry() {
       const rrStr = r.rr_ratio > 0 ? r.rr_ratio.toFixed(2) : '--';
       const qtyStr = r.contracts > 0 ? `<b style="color:var(--accent); font-weight:700;">${r.contracts}</b>` : '<span style="color:var(--text-dim);">-</span>';
 
-      if (r.status === 'DISARMED_BY_BIAS') {
-        tr.style.opacity = '0.35';
-      } else if (r.contracts === 0 && r.side !== 'MID') {
-        tr.style.opacity = '0.65';
-      }
-
-      const isProbing = (r.index === closestRungIdx && liveP > 0);
-      if (isProbing) tr.className = 'probing-row';
-
-      const probingTag = isProbing ? '<span class="probing-badge">◄ PROBING HERE</span>' : '';
-
-      const bookedVal = r.booked_pnl || 0.0;
-      const floatingVal = r.floating_pnl || 0.0;
-
       tr.innerHTML = `
         <td class="mono" style="font-weight:700; color:var(--text);">L${r.index}</td>
         <td style="color:${sideColor}; font-weight:700;">${r.side}</td>
-        <td><b>${r.role}</b> ${snapBadge} ${probingTag}</td>
+        <td><b>${r.role}</b> ${snapBadge}</td>
         <td class="mono" style="text-align:right; font-weight:700;">${r.price.toFixed(2)}</td>
         <td class="mono" style="text-align:right; color:var(--accent);">${deltaStr}</td>
         <td class="mono" style="text-align:right;">${r.tp.toFixed(2)}</td>
@@ -1360,8 +1220,8 @@ async function refreshTelemetry() {
         <td class="mono" style="text-align:right; color:var(--bull); font-weight:600;">${rewStr}</td>
         <td class="mono" style="text-align:center; color:var(--text-muted);">${rrStr}</td>
         <td class="mono" style="text-align:center; font-weight:600;">${capStr}</td>
-        <td class="mono" style="text-align:right;">${fmtPnl(bookedVal)}</td>
-        <td class="mono" style="text-align:right;">${fmtPnl(floatingVal)}</td>
+        <td class="mono" style="text-align:right;">${fmtPnl(r.booked_pnl || 0)}</td>
+        <td class="mono" style="text-align:right;">${fmtPnl(r.floating_pnl || 0)}</td>
         <td style="text-align:center;">${getStatusBadge(r.status)}</td>
       `;
       tbody.appendChild(tr);
@@ -1372,7 +1232,6 @@ async function refreshTelemetry() {
   }
 }
 
-// Initial form pre-fill from localStorage on boot
 loadFormValues();
 setInterval(refreshTelemetry, 500);
 refreshTelemetry();
@@ -1392,14 +1251,15 @@ _TELEMETRY: Dict[str, Any] = {
     "active_orders": 0,
     "staged_proposal": {"active": False},
     "telegram_feed": [],
-    "container": {"low": 27615.75, "high": 27950.00, "delta_p": 334.25, "p_eq": 27783.00, "s_step": 20.89, "s_harvest": 41.78},
+    "container": {"low": 27615.75, "high": 28662.00, "delta_p": 1046.25, "p_eq": 28138.88, "s_step": 65.39, "s_harvest": 130.78},
     "bias": {
-        "s_bias": 0.0, "s_spatial": 0.0, "s_chrono": 0.0, "ccr": 0.0,
+        "s_bias": 0.0, "s_spatial": 0.0, "s_chrono": 0.0, "s_formation": 0.0,
+        "s_integrity": 0.0, "s_touch_reaction": 0.0, "s_price_disp": 0.0,
         "regime": "NEUTRAL_EQUILIBRIUM", "directive": "TWO_SIDED_BALANCED",
-        "open_corridor": 154.25, "is_squeeze": False
+        "open_corridor": 312.25, "is_squeeze": False
     },
     "lifecycle": {
-        "tf": "15m", "status": "ACTIVE_QUOTING", "elapsed_str": "00:00:00",
+        "tf": "4H", "status": "ACTIVE_QUOTING", "elapsed_str": "00:00:00",
         "to_freeze_str": "--:--", "to_flatten_str": "--:--",
     },
     "grid": []
@@ -1420,24 +1280,93 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = json.loads(body) if body else {}
 
         if self.path == "/api/flatten":
-            log_telegram_message("IN", "🚨 <b>EMERGENCY FLATTEN INITIATED FROM DASHBOARD</b>")
+            print("\n🚨 [API] /api/flatten received!")
             if _ON_FLATTEN_CALLBACK:
                 _ON_FLATTEN_CALLBACK()
+            elif _ON_ARM_CALLBACK:
+                _ON_ARM_CALLBACK({"mode": "CANCEL", "posture": "FLATTEN"})
+
+            _TELEMETRY["lifecycle"]["status"] = "FLATTENED_DISARMED"
+            _TELEMETRY["active_orders"] = 0
+            _TELEMETRY["position"] = 0
+            for r in _TELEMETRY.get("grid", []):
+                r["status"] = "STANDBY"
+                r["contracts"] = 0
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+            self.wfile.write(json.dumps({"ok": True, "status": "FLATTENED"}).encode("utf-8"))
             return
 
         if self.path == "/api/arm":
             mode = data.get("mode", "SNAPPED")
             posture = data.get("posture", "DIRECTIVE")
+            setup = _TELEMETRY.get("pending_setup", {})
+
+            if setup and mode != "CANCEL" and _PENDING_GEOM is not None:
+                geom = _PENDING_GEOM
+                card = _PENDING_CARDS.get(mode, {})
+                disc_rungs = card.get("disc", [5, 6, 3])
+                prem_rungs = card.get("prem", [10, 11, 13])
+
+                grid_dict = geom.generate_grid(
+                    active_discount_rungs=disc_rungs,
+                    active_premium_rungs=prem_rungs,
+                    brk_low_back=setup["brk_low_back"],
+                    brk_low_front=setup["brk_low_front"],
+                    brk_high_front=setup["brk_high_front"],
+                    brk_high_back=setup["brk_high_back"]
+                )
+
+                grid_list = []
+                for idx in sorted(grid_dict.keys()):
+                    r = grid_dict[idx]
+                    geo_p = round_to_tick(geom.range_low + idx * geom.s_step)
+                    contracts = r.get("contracts", 0)
+
+                    grid_list.append({
+                        "index": idx,
+                        "side": r["side"],
+                        "role": r["role"],
+                        "price": r["price"],
+                        "geo_price": geo_p,
+                        "snap_delta": round(r["price"] - geo_p, 2),
+                        "tp": r["tp"],
+                        "contracts": contracts,
+                        "risk_dollar": round(r.get("risk_dollar", 0.0), 2),
+                        "reward_dollar": round(r.get("reward_dollar", 0.0), 2),
+                        "rr_ratio": round(r.get("rr_ratio", 2.2), 2),
+                        "rotations": r.get("rotations", 0),
+                        "cap": r.get("cap", 4),
+                        "booked_pnl": 0.0,
+                        "floating_pnl": 0.0,
+                        "status": "ARMED_RESTING" if contracts > 0 else "STANDBY"
+                    })
+
+                _TELEMETRY["instrument"] = setup.get("instrument", "NNQ")
+                _TELEMETRY["container"] = {
+                    "low": geom.range_low,
+                    "high": geom.range_high,
+                    "delta_p": round(geom.range_high - geom.range_low, 2),
+                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 2),
+                    "s_step": geom.s_step,
+                    "s_harvest": geom.s_harvest
+                }
+                _TELEMETRY["lifecycle"]["tf"] = setup["tf"]
+                _TELEMETRY["grid"] = grid_list
+                _TELEMETRY["lifecycle"]["status"] = "ACTIVE_QUOTING"
+
+            _PENDING_GEOM = None
             if "staged_proposal" in _TELEMETRY:
                 _TELEMETRY["staged_proposal"]["active"] = False
 
-            if _ON_ARM_CALLBACK:
-                _ON_ARM_CALLBACK({"mode": mode, "posture": posture})
+            try:
+                if _ON_ARM_CALLBACK:
+                    _ON_ARM_CALLBACK({"mode": mode, "posture": posture})
+            except Exception as e:
+                print(f"[Dashboard] ⚠️ Error in _ON_ARM_CALLBACK: {e}")
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1450,15 +1379,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             instrument = data.get("instrument", _TELEMETRY.get("instrument", "NNQ"))
             _TELEMETRY["instrument"] = instrument
 
-            low = float(data.get("low", 27000.00))
-            high = float(data.get("high", 27100.00))
-            tf = data.get("tf", "15m")
-            risk = float(data.get("risk", 200.0))
+            low = float(data.get("low", 27615.75))
+            high = float(data.get("high", 28662.00))
+            tf = normalize_timeframe(data.get("tf", "4H"))
+            risk = float(data.get("risk", 500.0))
             macro = data.get("macro_bias", "NEUTRAL")
             breakers = data.get("breakers", {})
-            brk_dir = data.get("dir_recent", "BULLISH")
-            touches = int(data.get("touches", 0))
-            elapsed_m = int(data.get("elapsed_minutes", 18))
+            brk_dir = data.get("dir_recent", "BEARISH")
+            touches = int(data.get("touches", 2))
+            elapsed_m = int(data.get("elapsed_minutes", 600))
 
             span = high - low
             df = float(breakers.get("df", low + span * 0.3125))
@@ -1466,8 +1395,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             sf = float(breakers.get("sf", high - span * 0.3125))
             sb = float(breakers.get("sb", high))
 
-            mult = 2.0 if instrument == "MNQ" else 0.2
-            fee = 1.94
+            mult = MULTIPLIERS.get(instrument, 2.0 if instrument == "MNQ" else 0.2)
+            fee = COMMISSION_PER_RT.get(instrument, 0.98 if instrument == "NNQ" else 1.94)
 
             geom = HarmonicGridGeometry(
                 range_low=low,
@@ -1495,18 +1424,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 last_breaker_dir=brk_dir,
                 elapsed_seconds=elapsed_m * 60,
                 mitigation_touches=touches,
+                current_price=_TELEMETRY.get("live_price") or ((low + high) / 2.0),
                 timeframe=tf
             )
 
             _TELEMETRY["bias"] = {
+                "score": bias_res.get("score", 0.0),
                 "s_bias": round(bias_res.get("s_bias", 0.0), 2),
                 "s_spatial": round(bias_res.get("s_spatial", 0.0), 2),
                 "s_chrono": round(bias_res.get("s_chrono", 0.0), 2),
-                "ccr": round(bias_res.get("ccr", 0.0), 4),
+                "s_formation": round(bias_res.get("s_formation", 0.0), 2),
+                "s_integrity": round(bias_res.get("s_integrity", 0.0), 2),
+                "s_touch_reaction": round(bias_res.get("s_touch_reaction", 0.0), 2),
+                "s_price_disp": round(bias_res.get("s_price_disp", 0.0), 2),
                 "open_corridor": round(bias_res.get("open_corridor", sf - df), 2),
                 "regime": bias_res.get("regime", "NEUTRAL_EQUILIBRIUM"),
                 "directive": bias_res.get("directive", "TWO_SIDED_BALANCED"),
-                "is_squeeze": bias_res.get("is_squeeze", False)
             }
 
             opts = proposal.get("options", {})
@@ -1534,14 +1467,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 total_risk = long_risk + short_risk
                 rung_count = sum(1 for r in g.values() if r.get("contracts", 0) > 0)
 
+                grid_matrix = []
+                for idx in range(16, -1, -1):
+                    if idx in g:
+                        r = g[idx]
+                        grid_matrix.append({
+                            "index": idx,
+                            "side": r.get("side", "MID"),
+                            "role": r.get("role", "MID_RANGE"),
+                            "price": round(r.get("price", 0.0), 2),
+                            "tp": round(r.get("tp", 0.0), 2),
+                            "contracts": r.get("contracts", 0),
+                            "risk_dollar": round(r.get("risk_dollar", 0.0), 2)
+                        })
+
+                s_h = geom.s_harvest
+                
+                # Active contracts and side breakdowns
+                long_rungs = [r for r in g.values() if r.get("side") == "LONG" and r.get("contracts", 0) > 0]
+                short_rungs = [r for r in g.values() if r.get("side") == "SHORT" and r.get("contracts", 0) > 0]
+                
+                long_cts = sum(r.get("contracts", 0) for r in long_rungs)
+                short_cts = sum(r.get("contracts", 0) for r in short_rungs)
+                side_cts = max(long_cts, short_cts)
+                rungs_per_side = max(len(long_rungs), len(short_rungs), 1)
+
+                net_1ct = max(0.0, (s_h * mult) - fee)
+                total_side_yield = round(side_cts * net_1ct, 2)
+                avg_rot_yield = round(total_side_yield / rungs_per_side, 2)
+                
+                # Minimum and maximum rotation yield on the ladder
+                active_cts = [r.get("contracts", 0) for r in g.values() if r.get("contracts", 0) > 0]
+                min_rot = round(min(active_cts) * net_1ct, 2) if active_cts else 0.0
+                max_rot = round(max(active_cts) * net_1ct, 2) if active_cts else 0.0
+
                 card_data = {
                     "key": opt_key,
                     "title": opt_title,
                     "rungs": rung_count,
+                    "side_cts": side_cts,
                     "side_risk": round(max_side_risk, 2),
                     "total_risk": round(total_risk, 2),
+                    "harvest_yield": avg_rot_yield,
+                    "min_rot_yield": min_rot,
+                    "max_rot_yield": max_rot,
+                    "side_yield": total_side_yield,
                     "disc": disc,
-                    "prem": prem
+                    "prem": prem,
+                    "grid_matrix": grid_matrix
                 }
                 calc_cards.append(card_data)
                 _PENDING_CARDS[opt_key] = card_data
@@ -1555,15 +1528,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "tf": tf,
                 "risk": risk,
                 "macro": macro,
+                "touches": touches,
+                "dir_recent": brk_dir,
+                "elapsed_minutes": elapsed_m,
                 "brk_low_front": df,
                 "brk_low_back": db,
                 "brk_high_front": sf,
                 "brk_high_back": sb
             }
-
-            s_h = geom.s_harvest
-            tp_dlr = round(s_h * mult, 2)
-            drag = round((fee / tp_dlr * 100.0), 1) if tp_dlr > 0 else 0.0
 
             _TELEMETRY["staged_proposal"] = {
                 "active": True,
@@ -1573,21 +1545,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "draft_high": high,
                 "draft_span": span,
                 "risk_budget": risk,
-                "tp_pts": s_h,
-                "tp_dlr": tp_dlr,
+                "tp_pts": geom.s_harvest,
+                "tp_dlr": round(geom.s_harvest * mult, 2),
                 "fee_per_rt": fee,
-                "fee_drag_pct": drag,
+                "fee_drag_pct": round((fee / (geom.s_harvest * mult) * 100.0), 1) if (geom.s_harvest * mult) > 0 else 0.0,
                 "cards": calc_cards
             }
-
-            log_telegram_message(
-                "OUT",
-                f"⚖️ <b>RANGE PROPOSAL GENERATED ({instrument} &bull; {tf})</b><br>"
-                f"Draft: {low:.2f} — {high:.2f} (Δ {span:.2f} pts)<br>"
-                f"Demand: {df:.2f} | Supply: {sf:.2f} | T_elapsed: {elapsed_m}m<br>"
-                f"1/8 TP: {s_h:.2f} pts (${tp_dlr:.2f}) | Fee Drag: {drag:.1f}%",
-                [["⚡ Arm Snapped", "📐 Arm Option B", "❌ Dismiss"]]
-            )
 
             if _ON_PROPOSE_CALLBACK:
                 _ON_PROPOSE_CALLBACK(data)
@@ -1612,6 +1575,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
 

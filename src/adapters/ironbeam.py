@@ -107,8 +107,16 @@ class IronbeamAdapter:
     def set_instrument(self, instrument):
         self.current_instrument = instrument
         self.data_symbol = self._get_exch_symbol(instrument)
-        print("[ironbeam]  Instrument set to: %s (exchSym: %s)" % (
+        print("[ironbeam] 🎯 Instrument switched to: %s (exchSym: %s)" % (
             instrument, self.data_symbol))
+        if getattr(self, "running", False) and getattr(self, "stream_id", None) and self.live_token:
+            try:
+                sub = f"{self.LIVE_BASE}/market/quotes/subscribe/{self.stream_id}?symbols={self.data_symbol}"
+                rr = requests.get(sub, headers={"Authorization": "Bearer %s" % self.live_token}, timeout=5)
+                print("[ironbeam] %s Re-subscribed CME feed to %s -> HTTP %s" % (
+                    "✅" if rr.status_code == 200 else "⚠️", self.data_symbol, rr.status_code))
+            except Exception as e:
+                print(f"[ironbeam] ⚠️ Error re-subscribing quotes for {self.data_symbol}: {e}")
 
     def authenticate(self):
         lu = os.environ.get("IRONBEAM_LIVE_USERNAME")
@@ -367,7 +375,14 @@ class IronbeamAdapter:
     # ------------------------------------------------------------------
     # Flatten
     # ------------------------------------------------------------------
-    def flatten_position(self, max_attempts=3):
+    def flatten_position(self, instrument=None, max_attempts=3):
+        # Support both signatures: flatten_position("NNQ", 3) or flatten_position(3)
+        if isinstance(instrument, int):
+            max_attempts = instrument
+            target_inst = None
+        else:
+            target_inst = instrument
+
         with self._flatten_guard:
             if self._flattening:
                 print("[ironbeam] ⚠️ Flatten already in progress — ignoring duplicate call")
@@ -387,6 +402,11 @@ class IronbeamAdapter:
             aborted = False
 
             for attempt in range(max_attempts):
+                all_pm = {k: v for k, v in self._position_map().items() if v != 0}
+                if target_inst:
+                    pm = {k: v for k, v in all_pm.items() if k == target_inst}
+                else:
+                    pm = all_pm
                 pm = {k: v for k, v in self._position_map().items() if v != 0}
                 if not pm:
                     print("[ironbeam] ✅ Position already flat (map empty)")
@@ -619,6 +639,7 @@ class IronbeamAdapter:
                 return
 
             sid = r.json()["streamId"]
+            self.stream_id = sid
             print("[ironbeam] 📡 Stream: %s" % sid)
 
             self.ws = wsl.create_connection(
