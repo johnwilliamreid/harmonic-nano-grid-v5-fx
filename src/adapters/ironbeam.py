@@ -33,6 +33,10 @@ class IronbeamAdapter:
         "MNQ": "XCME:MNQ.Z26",
         "NNQ": "XCME:NNQ.Z26",
     }
+    DATA_SYMBOLS = {
+        "MNQ": "XCME:MNQ.Z26",
+        "NNQ": "XCME:MNQ.Z26",
+    }
 
     _DEAD_KEYWORDS = (
         'complete', 'fill', 'cancel', 'reject', 'expire', 'done', 'closed'
@@ -106,15 +110,16 @@ class IronbeamAdapter:
 
     def set_instrument(self, instrument):
         self.current_instrument = instrument
-        self.data_symbol = self._get_exch_symbol(instrument)
+        self.data_symbol = self.DATA_SYMBOLS.get(instrument, "XCME:MNQ.Z26")
         print("[ironbeam] 🎯 Instrument switched to: %s (exchSym: %s)" % (
             instrument, self.data_symbol))
         if getattr(self, "running", False) and getattr(self, "stream_id", None) and self.live_token:
             try:
-                sub = f"{self.LIVE_BASE}/market/quotes/subscribe/{self.stream_id}?symbols={self.data_symbol}"
-                rr = requests.get(sub, headers={"Authorization": "Bearer %s" % self.live_token}, timeout=5)
-                print("[ironbeam] %s Re-subscribed CME feed to %s -> HTTP %s" % (
-                    "✅" if rr.status_code == 200 else "⚠️", self.data_symbol, rr.status_code))
+                for channel in ["quotes", "trades"]:
+                    sub = f"{self.LIVE_BASE}/market/{channel}/subscribe/{self.stream_id}?symbols={self.data_symbol}"
+                    rr = requests.get(sub, headers={"Authorization": f"Bearer {self.live_token}"}, timeout=5)
+                    print("[ironbeam] %s Re-subscribed CME %s to %s -> HTTP %s" % (
+                        "✅" if rr.status_code == 200 else "⚠️", channel, self.data_symbol, rr.status_code))
             except Exception as e:
                 print(f"[ironbeam] ⚠️ Error re-subscribing quotes for {self.data_symbol}: {e}")
 
@@ -300,7 +305,7 @@ class IronbeamAdapter:
         elif inferred_inst:
             self.current_instrument = inferred_inst
 
-        self.data_symbol = self._get_exch_symbol(self.current_instrument)
+        self.data_symbol = getattr(self, "DATA_SYMBOLS", {}).get(self.current_instrument, os.environ.get("IRONBEAM_SYMBOL", "XCME:MNQ.Z26"))
 
         cur_net = pm.get(self.current_instrument, 0)
         if cur_net == 0 and pm:
@@ -656,10 +661,11 @@ class IronbeamAdapter:
                     pass
                 time.sleep(0.3)
 
-            sub = f"{self.LIVE_BASE}/market/quotes/subscribe/{sid}?symbols={self.data_symbol}"
-            rr = requests.get(sub, headers={"Authorization": "Bearer %s" % self.live_token}, timeout=5)
-            print("[ironbeam] %s subscribe %s -> %s" % (
-                "✅" if rr.status_code == 200 else "⚠️", self.data_symbol, rr.status_code))
+            for channel in ["quotes", "trades"]:
+                sub = f"{self.LIVE_BASE}/market/{channel}/subscribe/{sid}?symbols={self.data_symbol}"
+                rr = requests.get(sub, headers={"Authorization": f"Bearer {self.live_token}"}, timeout=5)
+                print("[ironbeam] %s subscribe %s (%s) -> %s" % (
+                    "✅" if rr.status_code == 200 else "⚠️", self.data_symbol, channel, rr.status_code))
 
             self.running = True
             self.ws_thread = threading.Thread(target=self._ws_loop, daemon=True)
@@ -722,8 +728,17 @@ class IronbeamAdapter:
                 continue
             except Exception as e:
                 if self.running:
-                    print("[ironbeam] ⚠️ WS loop: %s" % str(e)[:100])
-                break
+                    print("[ironbeam] ⚠️ WS loop hiccup: %s. Reconnecting in 2s..." % str(e)[:100])
+                    time.sleep(2.0)
+                    try:
+                        self.ws = wsl.create_connection(
+                            f"{self.LIVE_WS}/{self.stream_id}?token={self.live_token}",
+                            timeout=10,
+                            sslopt={"cert_reqs": ssl.CERT_NONE}
+                        )
+                    except Exception:
+                        pass
+                continue
 
     def _update_bar(self, price):
         now = pd.Timestamp.now().floor("1min")
@@ -968,3 +983,24 @@ class IronbeamAdapter:
     def process_bar(self, high, low, last_price, open_price=None):
         self.last_price = last_price
         self.last_price_time = time.time()
+
+    def fetch_live_quote(self):
+        """Poll live quote via REST with confirmed symbols query."""
+        if not self.live_token:
+            return self.last_price
+        try:
+            url = f"{self.LIVE_BASE}/market/quotes?symbols={self.data_symbol}"
+            r = requests.get(url, headers={"Authorization": f"Bearer {self.live_token}"}, timeout=3)
+            if r.status_code == 200:
+                d = r.json()
+                quotes = d.get("quotes", [])
+                if quotes and isinstance(quotes, list):
+                    q = quotes[0]
+                    p = q.get("l") or q.get("last") or q.get("price")
+                    if p:
+                        self.last_price = float(p)
+                        self.last_price_time = time.time()
+                        return float(p)
+        except Exception:
+            pass
+        return self.last_price
