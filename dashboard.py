@@ -1044,6 +1044,7 @@ async function submitFlatten() {
 }
 
 function showGridPreview(key) {
+  window._CURRENT_PREVIEW_KEY = key;
   const previewBox = document.getElementById('preview-matrix-container');
   const tbody = document.getElementById('preview-matrix-tbody');
   const titleElem = document.getElementById('preview-matrix-title');
@@ -1110,6 +1111,7 @@ async function refreshTelemetry() {
   try {
     const res = await fetch('/api/telemetry');
     const d = await res.json();
+    window._LAST_TELEMETRY = d;
 
     const pDrawer = document.getElementById('proposal-drawer');
     const prop = d.staged_proposal;
@@ -1126,7 +1128,7 @@ async function refreshTelemetry() {
 
       if (tpPtsEl) tpPtsEl.textContent = `${(prop.tp_pts || 0).toFixed(2)} pts`;
       if (tpDlrEl) tpDlrEl.textContent = `$${(prop.tp_dlr || 0).toFixed(2)}`;
-      if (feeDlrEl) feeDlrEl.textContent = `$${(prop.fee_per_rt || 1.94).toFixed(2)}`;
+      if (feeDlrEl) feeDlrEl.textContent = `$${(prop.fee_per_rt || 1.88).toFixed(2)}`;
 
       if (dragBadge) {
         const drag = prop.fee_drag_pct || 0;
@@ -1336,98 +1338,138 @@ function closeAuditorModal() {
   if (el) el.style.display = 'none';
 }
 
-function openAuditorModal() {
-  var overlay = document.getElementById('auditor-modal-overlay');
-  var body = document.getElementById('auditor-modal-body');
+function openAuditorModal(selectedKey) {
+  const overlay = document.getElementById("auditor-modal-overlay");
+  const body = document.getElementById("auditor-modal-body");
   if (!overlay || !body) return;
 
-  var tel = window._LAST_TELEMETRY || {};
-  var prop = tel.staged_proposal;
-  var bias = tel.bias || {};
+  const tel = window._LAST_TELEMETRY || {};
+  const prop = tel.staged_proposal;
+  const bias = tel.bias || {};
 
-  var rungs = {};
-  var inst = tel.instrument || 'NNQ';
-  var mult = (inst === 'MNQ') ? 2.0 : 0.20;
-  var fee = (inst === 'MNQ') ? 1.94 : 0.98;
-  var sideBudget = 200.0;
-  var l0 = 0.0, l16 = 0.0;
-  var sourceLabel = '';
+  let rungsList = [];
+  let inst = tel.instrument || "NNQ";
+  let mult = (inst === "MNQ") ? 2.0 : 0.20;
+  let fee = 1.88;
+  let sideBudget = 200.0;
+  let l0 = 0.0, l16 = 0.0;
+  let sourceLabel = "";
 
-  var postureEl = document.querySelector('input[name="prop_posture"]:checked');
-  var posture = postureEl ? postureEl.value : 'DIRECTIVE';
+  const postureEl = document.querySelector('input[name="prop_posture"]:checked');
+  const posture = postureEl ? postureEl.value : "DIRECTIVE";
 
-  if (prop && prop.active && prop.cards && prop.cards.length > 0) {
-    sourceLabel = 'STAGED PROPOSAL DRAFT';
-    var card = prop.cards[0];
-    rungs = card.grid_dict || {};
-    inst = prop.instrument || inst;
-    mult = (inst === 'MNQ') ? 2.0 : 0.20;
-    fee = prop.fee_per_rt || fee;
-    sideBudget = prop.risk_budget || 200.0;
-    l0 = prop.draft_low || 0;
-    l16 = prop.draft_high || 0;
-  } else if (tel.matrix && Object.keys(tel.matrix).length > 0) {
-    sourceLabel = 'ACTIVE ARMED GRID';
-    rungs = tel.matrix;
-    l0 = tel.boundaries ? tel.boundaries[0] : 0;
-    l16 = tel.boundaries ? tel.boundaries[1] : 0;
-  } else if (tel.grid && Object.keys(tel.grid).length > 0) {
-    sourceLabel = 'ACTIVE ARMED GRID';
-    rungs = tel.grid;
-    l0 = tel.boundaries ? tel.boundaries[0] : 0;
-    l16 = tel.boundaries ? tel.boundaries[1] : 0;
-  } else {
+  // Build list of all available proposal cards
+  const allCards = (typeof stagedCardsCache !== "undefined" && Array.isArray(stagedCardsCache)) 
+    ? stagedCardsCache 
+    : ((prop && prop.cards) ? prop.cards : []);
+
+  // Determine which card/source to audit
+  const activeKey = selectedKey || window._CURRENT_PREVIEW_KEY || (allCards.length > 0 ? allCards[0].key : 'ACTIVE_GRID');
+  window._CURRENT_PREVIEW_KEY = activeKey;
+
+  let activeCard = allCards.find(c => c.key === activeKey);
+
+  // If selected option is a card
+  if (activeCard) {
+    sourceLabel = `PREVIEW: ${activeCard.title ? activeCard.title.toUpperCase() : activeCard.key}`;
+    l0 = prop && prop.draft_low ? prop.draft_low : (tel.container ? tel.container.low : 0);
+    l16 = prop && prop.draft_high ? prop.draft_high : (tel.container ? tel.container.high : 0);
+    fee = prop && prop.fee_per_rt ? prop.fee_per_rt : 1.88;
+    sideBudget = activeCard.side_risk ? activeCard.side_risk : (prop && prop.risk_budget ? prop.risk_budget : 200.0);
+
+    const rawRows = activeCard.grid_matrix || activeCard.rungs_preview || activeCard.grid_dict || [];
+    if (Array.isArray(rawRows)) {
+      rungsList = rawRows.map(r => Object.assign({}, r));
+    } else if (typeof rawRows === "object") {
+      Object.keys(rawRows).forEach(k => {
+        const it = Object.assign({}, rawRows[k]);
+        it.index = Number(k);
+        rungsList.push(it);
+      });
+    }
+  } 
+  // Fallback or explicit selection: Active Running Grid
+  else if (tel.grid && ((Array.isArray(tel.grid) && tel.grid.length > 0) || (typeof tel.grid === 'object' && Object.keys(tel.grid).length > 0))) {
+    sourceLabel = "ACTIVE ARMED GRID";
+    if (Array.isArray(tel.grid)) {
+      rungsList = tel.grid.map(r => Object.assign({}, r));
+    } else {
+      Object.keys(tel.grid).forEach(k => {
+        const it = Object.assign({}, tel.grid[k]);
+        it.index = Number(k);
+        rungsList.push(it);
+      });
+    }
+    if (tel.container) {
+      l0 = tel.container.low || 0;
+      l16 = tel.container.high || 0;
+    }
+  }
+
+  if (rungsList.length === 0) {
     body.innerHTML = '<div style="padding:30px; text-align:center; color:#8b949e;">No active grid or staged proposal available.</div>';
-    overlay.style.display = 'flex';
+    overlay.style.display = "flex";
     return;
   }
 
-  var sortedIdx = Object.keys(rungs).map(Number).sort(function(a,b){ return b - a; });
-  var shortRows = '', longRows = '';
-  var totShortRisk = 0, totLongRisk = 0;
-  var totShortCts = 0, totLongCts = 0;
+  // Calculate container step for +/- 0.0625 stop boundaries
+  const sStep = (tel.container && tel.container.s_step) ? Number(tel.container.s_step) : (Math.abs(l16 - l0) / 16.0);
+  const stopShortL16 = l16 + sStep;
+  const stopLongL0 = l0 - sStep;
 
-  var dir = bias.directive || 'TWO_SIDED_BALANCED';
+  // Sort descending L16 down to L0
+  rungsList.sort((a, b) => {
+    const idxA = a.index !== undefined ? a.index : (a.idx !== undefined ? a.idx : 0);
+    const idxB = b.index !== undefined ? b.index : (b.idx !== undefined ? b.idx : 0);
+    return idxB - idxA;
+  });
 
-  for (var i = 0; i < sortedIdx.length; i++) {
-    var idx = sortedIdx[i];
-    var r = rungs[idx] || {};
-    var px = r.price || 0;
-    if (!px) continue;
+  let shortRows = "", longRows = "";
+  let totShortRisk = 0, totLongRisk = 0;
+  let totShortCts = 0, totLongCts = 0;
+  const dir = bias.directive || "TWO_SIDED_BALANCED";
 
-    var isShort = (r.side === 'SHORT') || (idx >= 9);
-    var stopPx = isShort ? l16 : l0;
-    var distPts = Math.abs(stopPx - px);
-    var unitRisk = (distPts * mult) + fee;
-    var actCt = r.contracts || r.qty || 0;
+  rungsList.forEach(r => {
+    const idx = r.index !== undefined ? r.index : (r.idx !== undefined ? r.idx : 0);
+    const px = r.price ? Number(r.price) : 0;
+    if (!px) return;
 
-    var disarmed = false;
-    var reason = '';
-    if (posture === 'DIRECTIVE') {
-      if (dir.indexOf('DISARM_SHORTS') !== -1 && isShort) { disarmed = true; reason = 'BIAS_DISARM'; }
-      if (dir.indexOf('DISARM_LONGS') !== -1 && !isShort) { disarmed = true; reason = 'BIAS_DISARM'; }
-    } else if (posture === 'LONGS_ONLY' && isShort) {
-      disarmed = true; reason = 'POSTURE_DISARM';
-    } else if (posture === 'SHORTS_ONLY' && !isShort) {
-      disarmed = true; reason = 'POSTURE_DISARM';
+    const isShort = (r.side === "SHORT") || (idx >= 9);
+    const stopPx = isShort ? stopShortL16 : stopLongL0;
+    const distPts = Math.abs(stopPx - px);
+    const unitRisk = (distPts * mult) + fee;
+    const actCt = r.contracts !== undefined ? Number(r.contracts) : (r.qty !== undefined ? Number(r.qty) : 0);
+
+    let disarmed = false;
+    let reason = "";
+    if (posture === "DIRECTIVE") {
+      if (dir.includes("DISARM_SHORTS") && isShort) { disarmed = true; reason = "BIAS_DISARM"; }
+      if (dir.includes("DISARM_LONGS") && !isShort) { disarmed = true; reason = "BIAS_DISARM"; }
+    } else if (posture === "LONGS_ONLY" && isShort) {
+      disarmed = true; reason = "POSTURE_DISARM";
+    } else if (posture === "SHORTS_ONLY" && !isShort) {
+      disarmed = true; reason = "POSTURE_DISARM";
     }
 
-    var allocRisk = disarmed ? 0 : (actCt * unitRisk);
-    var ctDisplay = disarmed ? ('0 (' + reason + ')') : (actCt + ' ct');
-    var snapBadge = r.snapped ? ' <span style="color:#58a6ff; font-size:9px;">[SNAP]</span>' : '';
-    var sideColor = isShort ? 'var(--bear)' : 'var(--bull)';
+    const allocRisk = disarmed ? 0 : (actCt * unitRisk);
+    const ctDisplay = disarmed ? `0 (${reason})` : `${actCt} ct`;
+    const isSnapped = r.snapped || (r.snap_delta && Math.abs(r.snap_delta) > 0);
+    const snapBadge = isSnapped ? ' <span style="color:#58a6ff; font-size:9px;">[SNAP]</span>' : "";
+    const sideColor = isShort ? "var(--bear)" : "var(--bull)";
+    const rowStyle = disarmed ? "opacity:0.4; text-decoration:line-through;" : (actCt === 0 ? "opacity:0.4;" : "");
 
-    var rowStyle = disarmed ? 'opacity:0.4; text-decoration:line-through;' : '';
-    var row = '<tr style="' + rowStyle + '">' +
-      '<td style="font-weight:700; color:' + sideColor + ';">L' + idx + '</td>' +
-      '<td>' + (r.role || '') + snapBadge + '</td>' +
-      '<td>' + px.toFixed(2) + '</td>' +
-      '<td>' + stopPx.toFixed(2) + '</td>' +
-      '<td>' + distPts.toFixed(2) + ' pt</td>' +
-      '<td>$' + unitRisk.toFixed(2) + '</td>' +
-      '<td style="font-weight:700;">' + ctDisplay + '</td>' +
-      '<td style="font-weight:700;">$' + allocRisk.toFixed(2) + '</td>' +
-      '</tr>';
+    const row = `
+      <tr style="${rowStyle}">
+        <td style="font-weight:700; color:${sideColor};">L${idx}</td>
+        <td>${r.role || ""}${snapBadge}</td>
+        <td>${px.toFixed(2)}</td>
+        <td>${stopPx.toFixed(2)}</td>
+        <td>${distPts.toFixed(2)} pt</td>
+        <td>$${unitRisk.toFixed(2)}</td>
+        <td style="font-weight:700; color:${disarmed ? "#8b949e" : (actCt > 0 ? "var(--warn)" : "#fff")};">${ctDisplay}</td>
+        <td style="font-weight:700; color:${allocRisk > 0 ? "var(--bear)" : "#8b949e"};">$${allocRisk.toFixed(2)}</td>
+      </tr>
+    `;
 
     if (isShort) {
       shortRows += row;
@@ -1438,57 +1480,94 @@ function openAuditorModal() {
       totLongRisk += allocRisk;
       totLongCts += disarmed ? 0 : actCt;
     }
+  });
+
+  const scoreVal = (bias.score !== undefined) ? Number(bias.score).toFixed(2) : "0.00";
+  const scorePrefix = Number(scoreVal) >= 0 ? "+" : "";
+  const scoreColor = Number(scoreVal) >= 0 ? "var(--bull)" : "var(--bear)";
+  const spanPts = Math.abs(l16 - l0).toFixed(2);
+  const totalRisk = (totShortRisk + totLongRisk).toFixed(2);
+  const asym = totShortRisk > 0 ? (totLongRisk / totShortRisk).toFixed(2) + " : 1" : "Longs Only";
+  const stepHarvest = (mult * sStep).toFixed(2);
+
+  // Build card options dropdown
+  let dropdownOptions = "";
+  if (allCards.length > 0) {
+    allCards.forEach(c => {
+      const isSel = c.key === activeKey ? "selected" : "";
+      dropdownOptions += `<option value="${c.key}" ${isSel}>Proposal Option: ${c.title} ($${(c.side_risk || 0).toFixed(2)} / side)</option>`;
+    });
+  }
+  if (tel.grid && ((Array.isArray(tel.grid) && tel.grid.length > 0) || Object.keys(tel.grid).length > 0)) {
+    const isSel = activeKey === "ACTIVE_GRID" ? "selected" : "";
+    dropdownOptions += `<option value="ACTIVE_GRID" ${isSel}>Active Armed Cockpit Grid</option>`;
   }
 
-  var scoreVal = (bias.score !== undefined) ? Number(bias.score).toFixed(2) : '0.00';
-  var scorePrefix = Number(scoreVal) >= 0 ? '+' : '';
-  var scoreColor = Number(scoreVal) >= 0 ? 'var(--bull)' : 'var(--bear)';
-  var spanPts = Math.abs(l16 - l0).toFixed(2);
+  body.innerHTML = `
+    <!-- OPTION SWITCHER DROPDOWN BAR -->
+    <div style="background:rgba(255,255,255,0.05); border:1px solid rgba(88,166,255,0.3); border-radius:6px; padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:11px; font-weight:800; color:#58a6ff; letter-spacing:0.5px;">AUDIT TARGET:</span>
+        <select onchange="openAuditorModal(this.value)" style="background:#0d1117; color:#58a6ff; font-weight:700; border:1px solid #388bfd; border-radius:4px; padding:5px 10px; font-size:12px; font-family:var(--font-mono, monospace); cursor:pointer;">
+          ${dropdownOptions}
+        </select>
+      </div>
+      <div style="font-size:11px; color:#8b949e;">
+        Stop Buffer: <b>±1 Step (${sStep.toFixed(2)} pt)</b>
+      </div>
+    </div>
 
-  var out = '';
-  out += '<div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 14px; margin-bottom:12px;">' +
-    '<div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">' +
-    '<div><b>Source:</b> <span style="color:#58a6ff; font-weight:700;">' + sourceLabel + '</span></div>' +
-    '<div><b>Container:</b> ' + l0.toFixed(2) + ' — ' + l16.toFixed(2) + ' (' + spanPts + ' pts)</div>' +
-    '<div><b>Asset:</b> ' + inst + ' ($' + mult.toFixed(2) + '/pt)</div>' +
-    '<div><b>RT Comm:</b> $' + fee.toFixed(2) + '</div>' +
-    '<div><b>Side Budget:</b> $' + sideBudget.toFixed(2) + '</div>' +
-    '</div></div>';
+    <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 14px; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <div><b>Target:</b> <span style="color:#58a6ff; font-weight:700;">${sourceLabel}</span></div>
+        <div><b>Container:</b> ${l0.toFixed(2)} — ${l16.toFixed(2)} (${spanPts} pts)</div>
+        <div><b>Asset:</b> ${inst} ($${mult.toFixed(2)}/pt)</div>
+        <div><b>RT Comm:</b> $${fee.toFixed(2)}</div>
+        <div><b>Side Budget:</b> $${sideBudget.toFixed(2)}</div>
+      </div>
+    </div>
 
-  out += '<div style="background:rgba(88,166,255,0.06); border:1px solid rgba(88,166,255,0.25); border-radius:6px; padding:10px 14px; margin-bottom:14px;">' +
-    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">' +
-    '<span style="font-weight:800; color:#58a6ff;">🧠 DIRECTIONAL BIAS VECTOR</span>' +
-    '<span>Score: <b style="color:' + scoreColor + ';">' + scorePrefix + scoreVal + '</b> (' + (bias.regime || 'EQUILIBRIUM') + ')</span>' +
-    '</div>' +
-    '<div style="font-size:11px; color:#8b949e; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">' +
-    '<div><b>Operating Directive:</b> ' + dir + '</div>' +
-    '<div><b>Posture Setting:</b> <span style="color:#fff; font-weight:700;">' + posture + '</span></div>' +
-    '</div></div>';
+    <div style="background:rgba(88,166,255,0.06); border:1px solid rgba(88,166,255,0.25); border-radius:6px; padding:10px 14px; margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-weight:800; color:#58a6ff;">🧠 DIRECTIONAL BIAS VECTOR</span>
+        <span>Score: <b style="color:${scoreColor};">${scorePrefix}${scoreVal}</b> (${bias.regime || "EQUILIBRIUM"})</span>
+      </div>
+      <div style="font-size:11px; color:#8b949e; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <div><b>Operating Directive:</b> ${dir}</div>
+        <div><b>Posture Override:</b> <span style="color:#fff; font-weight:700;">${posture}</span></div>
+      </div>
+    </div>
 
-  out += '<div style="color:var(--bear); font-weight:800; margin-top:12px; margin-bottom:4px; display:flex; justify-content:space-between;">' +
-    '<span>🐻 PREMIUM SIDE (SHORTS) — STOP: L16</span>' +
-    '<span>Allocated Risk: <b>$' + totShortRisk.toFixed(2) + '</b> (' + totShortCts + ' cts)</span>' +
-    '</div>' +
-    '<table class="aud-tbl"><thead><tr><th>Rung</th><th>Role</th><th>Entry</th><th>Stop</th><th>Distance</th><th>Unit Risk</th><th>Active Cts</th><th>Alloc Risk</th></tr></thead><tbody>' +
-    shortRows + '</tbody></table>';
+    <div style="color:var(--bear); font-weight:800; margin-top:12px; margin-bottom:4px; display:flex; justify-content:space-between;">
+      <span>🐻 PREMIUM SIDE (SHORTS) — HARD BRACKET STOP (+1.0625 / ${stopShortL16.toFixed(2)})</span>
+      <span>Allocated Risk: <b>$${totShortRisk.toFixed(2)}</b> (${totShortCts} cts)</span>
+    </div>
+    <table class="aud-tbl">
+      <thead>
+        <tr><th>Rung</th><th>Role</th><th>Entry</th><th>Stop (+1.0625)</th><th>Distance</th><th>Unit Risk</th><th>Contracts</th><th>Alloc Risk</th></tr>
+      </thead>
+      <tbody>${shortRows}</tbody>
+    </table>
 
-  out += '<div style="color:var(--bull); font-weight:800; margin-top:14px; margin-bottom:4px; display:flex; justify-content:space-between;">' +
-    '<span>🐂 DISCOUNT SIDE (LONGS) — STOP: L0</span>' +
-    '<span>Allocated Risk: <b>$' + totLongRisk.toFixed(2) + '</b> (' + totLongCts + ' cts)</span>' +
-    '</div>' +
-    '<table class="aud-tbl"><thead><tr><th>Rung</th><th>Role</th><th>Entry</th><th>Stop</th><th>Distance</th><th>Unit Risk</th><th>Active Cts</th><th>Alloc Risk</th></tr></thead><tbody>' +
-    longRows + '</tbody></table>';
+    <div style="color:var(--bull); font-weight:800; margin-top:14px; margin-bottom:4px; display:flex; justify-content:space-between;">
+      <span>🐂 DISCOUNT SIDE (LONGS) — HARD BRACKET STOP (-0.0625 / ${stopLongL0.toFixed(2)})</span>
+      <span>Allocated Risk: <b>$${totLongRisk.toFixed(2)}</b> (${totLongCts} cts)</span>
+    </div>
+    <table class="aud-tbl">
+      <thead>
+        <tr><th>Rung</th><th>Role</th><th>Entry</th><th>Stop (-0.0625)</th><th>Distance</th><th>Unit Risk</th><th>Contracts</th><th>Alloc Risk</th></tr>
+      </thead>
+      <tbody>${longRows}</tbody>
+    </table>
 
-  var totalRisk = (totShortRisk + totLongRisk).toFixed(2);
-  var asym = totShortRisk > 0 ? (totLongRisk / totShortRisk).toFixed(2) + ' : 1' : 'Longs Only';
-  out += '<div style="margin-top:14px; padding:12px 14px; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.1); border-radius:6px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;">' +
-    '<div><b>Net Two-Sided Risk:</b> $' + totalRisk + '</div>' +
-    '<div><b>Risk Asymmetry (Long / Short):</b> ' + asym + '</div>' +
-    '<div><b>1/8 Harvest Yield:</b> $' + (mult * 20.0).toFixed(2) + ' gross/ct</div>' +
-    '</div>';
+    <div style="margin-top:14px; padding:12px 14px; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.1); border-radius:6px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+      <div><b>Net Two-Sided Risk:</b> $${totalRisk}</div>
+      <div><b>Risk Asymmetry (Long / Short):</b> ${asym}</div>
+      <div><b>1/8 Harvest Yield:</b> $${stepHarvest} gross/ct</div>
+    </div>
+  `;
 
-  body.innerHTML = out;
-  overlay.style.display = 'flex';
+  overlay.style.display = "flex";
 }
 
 </script>
