@@ -496,8 +496,9 @@ def run_live_session(args):
             except Exception as e:
                 print(f"[DataStore] ⚠️ Error re-registering levels: {e}")
 
+            state["posture"] = posture
             state["status"] = "ACTIVE_QUOTING"
-            print("🚀 [DASHBOARD ARM] Grid is now ARMED & QUOTING.")
+            print(f"🚀 [DASHBOARD ARM] Grid is now ARMED & QUOTING with posture={posture}.")
 
         except Exception as e:
             import traceback
@@ -985,6 +986,7 @@ def run_live_session(args):
             # 4. Passive Order Dispatch & Retracement Quoting
             if broker and state["status"] == "ACTIVE_QUOTING" and live_px > 0:
                 directive = bias_data.get("directive", "TWO_SIDED_BALANCED")
+                current_posture = state.get("posture", "DIRECTIVE")
 
                 for idx, r in grid_by_idx.items():
                     if r["cap"] == 0 or r["contracts"] == 0 or r["rotations"] >= r["cap"]:
@@ -993,11 +995,19 @@ def run_live_session(args):
                     if r["status"] in ("FILLED_IN_POSITION", "STOPPED_OUT", "INVALIDATED", "WORKING"):
                         continue
 
-                    if directive == "DISARM_SHORTS" and r["side"] == "SHORT":
-                        r["status"] = "DISARMED_BIAS"
+                    # Posture and directive rules
+                    if current_posture == "DIRECTIVE":
+                        if "DISARM_SHORTS" in directive and r["side"] == "SHORT":
+                            r["status"] = "DISARMED_BIAS"
+                            continue
+                        if "DISARM_LONGS" in directive and r["side"] == "LONG":
+                            r["status"] = "DISARMED_BIAS"
+                            continue
+                    elif current_posture == "LONGS_ONLY" and r["side"] == "SHORT":
+                        r["status"] = "DISARMED_POSTURE"
                         continue
-                    if directive == "DISARM_LONGS" and r["side"] == "LONG":
-                        r["status"] = "DISARMED_BIAS"
+                    elif current_posture == "SHORTS_ONLY" and r["side"] == "LONG":
+                        r["status"] = "DISARMED_POSTURE"
                         continue
 
                     current_market_px = get_fresh_market_price()

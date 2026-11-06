@@ -420,6 +420,72 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--text-muted);
     margin-bottom: 6px;
   }
+
+/* Sizing Auditor Modal */
+#auditor-modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(5px);
+  z-index: 99999;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+#auditor-modal-box {
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  width: 95%;
+  max-width: 900px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.9);
+  font-family: var(--font-mono, monospace);
+  color: #c9d1d9;
+}
+.aud-hdr {
+  padding: 12px 18px;
+  background: #161b22;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+.aud-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.aud-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 16px 0;
+  font-size: 11.5px;
+}
+.aud-tbl th {
+  background: rgba(255,255,255,0.04);
+  color: #8b949e;
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+  font-size: 10.5px;
+}
+.aud-tbl th:first-child, .aud-tbl td:first-child,
+.aud-tbl th:nth-child(2), .aud-tbl td:nth-child(2) {
+  text-align: left;
+}
+.aud-tbl td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  text-align: right;
+}
+
 </style>
 </head>
 <body>
@@ -596,8 +662,34 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </table>
   </div>
 
+  <!-- DIRECTIONAL BIAS POSTURE SELECTOR -->
+  <div style="margin-top:14px; padding:12px 14px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px;">
+    <div style="font-size:11px; font-weight:800; color:#58a6ff; letter-spacing:0.5px; text-transform:uppercase; margin-bottom:8px;">
+      ⚡ Directional Bias Guidance & Execution Posture
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:16px; font-size:12px;">
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="radio" name="prop_posture" value="DIRECTIVE" checked>
+        <span>⚡ <b>Follow Directive</b> <span style="color:#8b949e; font-size:11px;">(Auto-Throttle)</span></span>
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="radio" name="prop_posture" value="BALANCED">
+        <span>⚖️ <b>Balanced</b> <span style="color:#8b949e; font-size:11px;">(Symmetric 50/50)</span></span>
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="radio" name="prop_posture" value="LONGS_ONLY">
+        <span>🐂 <b>Longs Only</b> <span style="color:#8b949e; font-size:11px;">(Disarm Shorts)</span></span>
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="radio" name="prop_posture" value="SHORTS_ONLY">
+        <span>🐻 <b>Shorts Only</b> <span style="color:#8b949e; font-size:11px;">(Disarm Longs)</span></span>
+      </label>
+    </div>
+  </div>
+
   <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
-    <button class="btn btn-cancel" onclick="submitProposalChoice('CANCEL')">❌ Dismiss Draft</button>
+    <button class="btn" style="background:#1f2937; border:1px solid #388bfd; color:#58a6ff;" onclick="openAuditorModal()">📐 Sizing & Bias Math</button>
+      <button class="btn btn-cancel" onclick="submitProposalChoice('CANCEL')">❌ Dismiss Draft</button>
   </div>
 </div>
 
@@ -908,6 +1000,7 @@ async function submitNewRange() {
       body: JSON.stringify(payload)
     });
     const d = await res.json();
+    window._LAST_TELEMETRY = d;
     if (d.ok) {
       document.getElementById('range-entry-drawer').style.display = 'none';
       refreshTelemetry();
@@ -919,10 +1012,12 @@ async function submitNewRange() {
 
 async function submitProposalChoice(choice) {
   try {
+    const postureEl = document.querySelector('input[name="prop_posture"]:checked');
+    const selectedPosture = postureEl ? postureEl.value : 'DIRECTIVE';
     const res = await fetch('/api/arm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: choice, posture: 'DIRECTIVE' })
+      body: JSON.stringify({ mode: choice, posture: selectedPosture })
     });
     const d = await res.json();
     if (d.ok) {
@@ -1235,7 +1330,179 @@ async function refreshTelemetry() {
 loadFormValues();
 setInterval(refreshTelemetry, 500);
 refreshTelemetry();
+
+function closeAuditorModal() {
+  var el = document.getElementById('auditor-modal-overlay');
+  if (el) el.style.display = 'none';
+}
+
+function openAuditorModal() {
+  var overlay = document.getElementById('auditor-modal-overlay');
+  var body = document.getElementById('auditor-modal-body');
+  if (!overlay || !body) return;
+
+  var tel = window._LAST_TELEMETRY || {};
+  var prop = tel.staged_proposal;
+  var bias = tel.bias || {};
+
+  var rungs = {};
+  var inst = tel.instrument || 'NNQ';
+  var mult = (inst === 'MNQ') ? 2.0 : 0.20;
+  var fee = (inst === 'MNQ') ? 1.94 : 0.98;
+  var sideBudget = 200.0;
+  var l0 = 0.0, l16 = 0.0;
+  var sourceLabel = '';
+
+  var postureEl = document.querySelector('input[name="prop_posture"]:checked');
+  var posture = postureEl ? postureEl.value : 'DIRECTIVE';
+
+  if (prop && prop.active && prop.cards && prop.cards.length > 0) {
+    sourceLabel = 'STAGED PROPOSAL DRAFT';
+    var card = prop.cards[0];
+    rungs = card.grid_dict || {};
+    inst = prop.instrument || inst;
+    mult = (inst === 'MNQ') ? 2.0 : 0.20;
+    fee = prop.fee_per_rt || fee;
+    sideBudget = prop.risk_budget || 200.0;
+    l0 = prop.draft_low || 0;
+    l16 = prop.draft_high || 0;
+  } else if (tel.matrix && Object.keys(tel.matrix).length > 0) {
+    sourceLabel = 'ACTIVE ARMED GRID';
+    rungs = tel.matrix;
+    l0 = tel.boundaries ? tel.boundaries[0] : 0;
+    l16 = tel.boundaries ? tel.boundaries[1] : 0;
+  } else if (tel.grid && Object.keys(tel.grid).length > 0) {
+    sourceLabel = 'ACTIVE ARMED GRID';
+    rungs = tel.grid;
+    l0 = tel.boundaries ? tel.boundaries[0] : 0;
+    l16 = tel.boundaries ? tel.boundaries[1] : 0;
+  } else {
+    body.innerHTML = '<div style="padding:30px; text-align:center; color:#8b949e;">No active grid or staged proposal available.</div>';
+    overlay.style.display = 'flex';
+    return;
+  }
+
+  var sortedIdx = Object.keys(rungs).map(Number).sort(function(a,b){ return b - a; });
+  var shortRows = '', longRows = '';
+  var totShortRisk = 0, totLongRisk = 0;
+  var totShortCts = 0, totLongCts = 0;
+
+  var dir = bias.directive || 'TWO_SIDED_BALANCED';
+
+  for (var i = 0; i < sortedIdx.length; i++) {
+    var idx = sortedIdx[i];
+    var r = rungs[idx] || {};
+    var px = r.price || 0;
+    if (!px) continue;
+
+    var isShort = (r.side === 'SHORT') || (idx >= 9);
+    var stopPx = isShort ? l16 : l0;
+    var distPts = Math.abs(stopPx - px);
+    var unitRisk = (distPts * mult) + fee;
+    var actCt = r.contracts || r.qty || 0;
+
+    var disarmed = false;
+    var reason = '';
+    if (posture === 'DIRECTIVE') {
+      if (dir.indexOf('DISARM_SHORTS') !== -1 && isShort) { disarmed = true; reason = 'BIAS_DISARM'; }
+      if (dir.indexOf('DISARM_LONGS') !== -1 && !isShort) { disarmed = true; reason = 'BIAS_DISARM'; }
+    } else if (posture === 'LONGS_ONLY' && isShort) {
+      disarmed = true; reason = 'POSTURE_DISARM';
+    } else if (posture === 'SHORTS_ONLY' && !isShort) {
+      disarmed = true; reason = 'POSTURE_DISARM';
+    }
+
+    var allocRisk = disarmed ? 0 : (actCt * unitRisk);
+    var ctDisplay = disarmed ? ('0 (' + reason + ')') : (actCt + ' ct');
+    var snapBadge = r.snapped ? ' <span style="color:#58a6ff; font-size:9px;">[SNAP]</span>' : '';
+    var sideColor = isShort ? 'var(--bear)' : 'var(--bull)';
+
+    var rowStyle = disarmed ? 'opacity:0.4; text-decoration:line-through;' : '';
+    var row = '<tr style="' + rowStyle + '">' +
+      '<td style="font-weight:700; color:' + sideColor + ';">L' + idx + '</td>' +
+      '<td>' + (r.role || '') + snapBadge + '</td>' +
+      '<td>' + px.toFixed(2) + '</td>' +
+      '<td>' + stopPx.toFixed(2) + '</td>' +
+      '<td>' + distPts.toFixed(2) + ' pt</td>' +
+      '<td>$' + unitRisk.toFixed(2) + '</td>' +
+      '<td style="font-weight:700;">' + ctDisplay + '</td>' +
+      '<td style="font-weight:700;">$' + allocRisk.toFixed(2) + '</td>' +
+      '</tr>';
+
+    if (isShort) {
+      shortRows += row;
+      totShortRisk += allocRisk;
+      totShortCts += disarmed ? 0 : actCt;
+    } else {
+      longRows += row;
+      totLongRisk += allocRisk;
+      totLongCts += disarmed ? 0 : actCt;
+    }
+  }
+
+  var scoreVal = (bias.score !== undefined) ? Number(bias.score).toFixed(2) : '0.00';
+  var scorePrefix = Number(scoreVal) >= 0 ? '+' : '';
+  var scoreColor = Number(scoreVal) >= 0 ? 'var(--bull)' : 'var(--bear)';
+  var spanPts = Math.abs(l16 - l0).toFixed(2);
+
+  var out = '';
+  out += '<div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 14px; margin-bottom:12px;">' +
+    '<div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">' +
+    '<div><b>Source:</b> <span style="color:#58a6ff; font-weight:700;">' + sourceLabel + '</span></div>' +
+    '<div><b>Container:</b> ' + l0.toFixed(2) + ' — ' + l16.toFixed(2) + ' (' + spanPts + ' pts)</div>' +
+    '<div><b>Asset:</b> ' + inst + ' ($' + mult.toFixed(2) + '/pt)</div>' +
+    '<div><b>RT Comm:</b> $' + fee.toFixed(2) + '</div>' +
+    '<div><b>Side Budget:</b> $' + sideBudget.toFixed(2) + '</div>' +
+    '</div></div>';
+
+  out += '<div style="background:rgba(88,166,255,0.06); border:1px solid rgba(88,166,255,0.25); border-radius:6px; padding:10px 14px; margin-bottom:14px;">' +
+    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">' +
+    '<span style="font-weight:800; color:#58a6ff;">🧠 DIRECTIONAL BIAS VECTOR</span>' +
+    '<span>Score: <b style="color:' + scoreColor + ';">' + scorePrefix + scoreVal + '</b> (' + (bias.regime || 'EQUILIBRIUM') + ')</span>' +
+    '</div>' +
+    '<div style="font-size:11px; color:#8b949e; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">' +
+    '<div><b>Operating Directive:</b> ' + dir + '</div>' +
+    '<div><b>Posture Setting:</b> <span style="color:#fff; font-weight:700;">' + posture + '</span></div>' +
+    '</div></div>';
+
+  out += '<div style="color:var(--bear); font-weight:800; margin-top:12px; margin-bottom:4px; display:flex; justify-content:space-between;">' +
+    '<span>🐻 PREMIUM SIDE (SHORTS) — STOP: L16</span>' +
+    '<span>Allocated Risk: <b>$' + totShortRisk.toFixed(2) + '</b> (' + totShortCts + ' cts)</span>' +
+    '</div>' +
+    '<table class="aud-tbl"><thead><tr><th>Rung</th><th>Role</th><th>Entry</th><th>Stop</th><th>Distance</th><th>Unit Risk</th><th>Active Cts</th><th>Alloc Risk</th></tr></thead><tbody>' +
+    shortRows + '</tbody></table>';
+
+  out += '<div style="color:var(--bull); font-weight:800; margin-top:14px; margin-bottom:4px; display:flex; justify-content:space-between;">' +
+    '<span>🐂 DISCOUNT SIDE (LONGS) — STOP: L0</span>' +
+    '<span>Allocated Risk: <b>$' + totLongRisk.toFixed(2) + '</b> (' + totLongCts + ' cts)</span>' +
+    '</div>' +
+    '<table class="aud-tbl"><thead><tr><th>Rung</th><th>Role</th><th>Entry</th><th>Stop</th><th>Distance</th><th>Unit Risk</th><th>Active Cts</th><th>Alloc Risk</th></tr></thead><tbody>' +
+    longRows + '</tbody></table>';
+
+  var totalRisk = (totShortRisk + totLongRisk).toFixed(2);
+  var asym = totShortRisk > 0 ? (totLongRisk / totShortRisk).toFixed(2) + ' : 1' : 'Longs Only';
+  out += '<div style="margin-top:14px; padding:12px 14px; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.1); border-radius:6px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;">' +
+    '<div><b>Net Two-Sided Risk:</b> $' + totalRisk + '</div>' +
+    '<div><b>Risk Asymmetry (Long / Short):</b> ' + asym + '</div>' +
+    '<div><b>1/8 Harvest Yield:</b> $' + (mult * 20.0).toFixed(2) + ' gross/ct</div>' +
+    '</div>';
+
+  body.innerHTML = out;
+  overlay.style.display = 'flex';
+}
+
 </script>
+
+<div id="auditor-modal-overlay" onclick="if(event.target===this)closeAuditorModal()">
+  <div id="auditor-modal-box">
+    <div class="aud-hdr">
+      <span style="color:#58a6ff;">📐 MATHEMATICAL LADDER AUDIT & BIAS VECTOR</span>
+      <button class="btn btn-cancel" style="padding:3px 10px; font-size:12px;" onclick="closeAuditorModal()">✕ Close</button>
+    </div>
+    <div id="auditor-modal-body" class="aud-body"></div>
+  </div>
+</div>
+
 </body>
 </html>
 """
