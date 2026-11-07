@@ -8,7 +8,7 @@ import datetime
 from typing import Any, Optional, Dict, List, Tuple
 from dotenv import load_dotenv
 
-from dashboard import start_dashboard_server, update_telemetry, set_arm_callback, set_flatten_callback
+from dashboard import start_dashboard_server, update_telemetry, set_arm_callback, set_flatten_callback, set_deploy_callback
 import dashboard
 
 from src.config import MULTIPLIERS, COMMISSION_PER_RT, TICK_SIZES
@@ -497,8 +497,10 @@ def run_live_session(args):
                 print(f"[DataStore] ⚠️ Error re-registering levels: {e}")
 
             state["posture"] = posture
-            state["status"] = "ACTIVE_QUOTING"
-            print(f"🚀 [DASHBOARD ARM] Grid is now ARMED & QUOTING with posture={posture}.")
+            state["status"] = "ARMED_STANDBY"
+            if hasattr(dashboard, "_TELEMETRY"):
+                dashboard._TELEMETRY["lifecycle"]["status"] = "ARMED_STANDBY"
+            print(f"⚡ [DASHBOARD ARM] Grid PRE-ARMED in STANDBY with posture={posture}. Awaiting Deploy.")
 
         except Exception as e:
             import traceback
@@ -513,6 +515,15 @@ def run_live_session(args):
         state['panic_flatten_requested'] = True
 
     set_flatten_callback(on_dashboard_flatten)
+    def on_dashboard_deploy():
+        nonlocal state
+        print("[DASHBOARD DEPLOY] ⚡ Deploy triggered! Transitioning to ACTIVE_QUOTING.")
+        state["status"] = "ACTIVE_QUOTING"
+        if hasattr(dashboard, "_TELEMETRY"):
+            dashboard._TELEMETRY["lifecycle"]["status"] = "ACTIVE_QUOTING"
+
+    set_deploy_callback(on_dashboard_deploy)
+
 
     def handle_lifecycle_decision(action: str):
         nonlocal state, max_duration, t_start, freeze_at
@@ -1126,7 +1137,7 @@ def main():
     parser.add_argument("--high", type=float, default=None, help="Container Range High (optional, can stage via UI/TG)")
     parser.add_argument("--risk", type=float, default=1200.0, help="Total Side Risk Budget in USD")
     parser.add_argument("--tf", type=str, default="15m", help="Container Timeframe (4h, 1h, 15m, 4m, 1m)")
-    parser.add_argument("--source", type=str, default="paper", choices=["ironbeam", "paper"], help="Data/Execution engine")
+    parser.add_argument("--source", type=str, default="ironbeam", choices=["ironbeam", "paper"], help="Data/Execution engine")
     parser.add_argument("--live-exec", action="store_true", help="Arm live real-money execution on CME")
     parser.add_argument("--wait-arm", action="store_true", help="Wait for explicit Telegram arm tap before quoting")
     parser.add_argument("--brk-low-front", type=float, default=None, help="Long breaker front edge")

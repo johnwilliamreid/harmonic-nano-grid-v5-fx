@@ -14,6 +14,8 @@ _PENDING_PROPOSAL: Optional[Dict[str, Any]] = None
 _PENDING_CARDS: Dict[str, Any] = {}
 
 _ON_ARM_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
+_ON_DEPLOY_CALLBACK: Optional[Callable[[], None]] = None
+_ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
 _ON_PROPOSE_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
 _ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
 
@@ -59,6 +61,16 @@ def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_hi
 def set_arm_callback(cb: Callable[[Dict[str, Any]], None]):
     global _ON_ARM_CALLBACK
     _ON_ARM_CALLBACK = cb
+
+def set_deploy_callback(cb: Callable[[], None]):
+    global _ON_DEPLOY_CALLBACK
+    _ON_DEPLOY_CALLBACK = cb
+
+def set_flatten_callback(cb: Callable[[], None]):
+    global _ON_FLATTEN_CALLBACK
+    _ON_FLATTEN_CALLBACK = cb
+
+
 
 def set_propose_callback(cb: Callable[[Dict[str, Any]], None]):
     global _ON_PROPOSE_CALLBACK
@@ -486,6 +498,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   text-align: right;
 }
 
+
+  tr.probing-row { background: rgba(56, 189, 248, 0.12) !important; }
+  tr.probing-row td { border-top: 1px solid rgba(56, 189, 248, 0.4); border-bottom: 1px solid rgba(56, 189, 248, 0.4); }
+  .probing-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-left: 6px;
+    border-radius: 4px;
+    background: #38bdf8;
+    color: #000;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+  }
+  .btn-deploy {
+    background: #10b981;
+    color: #000;
+    font-weight: 800;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    animation: pulse-deploy 1.8s infinite;
+  }
+  @keyframes pulse-deploy {
+    0%, 100% { box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); }
+    50% { box-shadow: 0 0 22px rgba(16, 185, 129, 0.8); }
+  }
+
 </style>
 </head>
 <body>
@@ -500,7 +539,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="color: var(--text-muted); font-size: 11px; margin-top: 3px;" class="mono">
       Asset: <span id="hdr-asset" style="color:var(--text); font-weight:700;">--</span> &bull;
       Boundaries: <span id="hdr-container" style="color:var(--text);">-- &mdash; --</span> (<span id="hdr-span">--</span> pts) &bull;
-      Median Eq (L8): <span id="hdr-eq" style="color:var(--warn); font-weight:700;">--</span>
+      Median Eq (L8): <span id="hdr-eq" style="color:var(--warn); font-weight:700;">--</span> &bull;
+      Remaining Risk: <span id="hdr-rem-risk" class="mono" style="font-weight:700; color:var(--text);"><span style="color:var(--bull);">L: $0.00</span> | <span style="color:var(--bear);">S: $0.00</span></span>
     </div>
   </div>
   <div style="display: flex; gap: 8px; align-items: center;">
@@ -509,6 +549,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button id="toggle-mnq" class="btn" style="padding:4px 8px; font-size:11px; background:transparent; color:var(--text-muted);" onclick="switchActiveInstrument('MNQ')">MNQ</button>
     </div>
     <button class="btn btn-primary" onclick="toggleRangeForm()">📐 ENTER NEW RANGE</button>
+    <button id="btn-deploy" class="btn btn-deploy" style="display:none;" onclick="submitDeploy()">⚡ DEPLOY GRID</button>
     <button class="btn btn-flatten" onclick="submitFlatten()">🚨 FLATTEN</button>
     <span id="badge-venue" class="badge badge-demo">PAPER DEMO</span>
     <span id="badge-status" class="badge badge-status-active">ARMED &amp; QUOTING</span>
@@ -643,7 +684,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div id="preview-matrix-container">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <b id="preview-matrix-title" style="color:var(--accent); font-size:12px;">🔍 GRID MATRIX PREVIEW</b>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <b id="preview-matrix-title" style="color:var(--accent); font-size:12px;">🔍 GRID MATRIX PREVIEW</b>
+        <button class="btn btn-aux" style="padding:1px 6px; font-size:10px; cursor:pointer;" onclick="document.getElementById('preview-matrix-container').style.display='none'; window._CURRENT_PREVIEW_KEY=null;">✖ Close</button>
+      </div>
       <span id="preview-matrix-risk" class="mono" style="font-size:11px;">Side Risk: --</span>
     </div>
     <table style="width:100%; border-collapse:collapse;">
@@ -1000,10 +1044,12 @@ async function submitNewRange() {
       body: JSON.stringify(payload)
     });
     const d = await res.json();
-    window._LAST_TELEMETRY = d;
     if (d.ok) {
+      if (d.staged_proposal && d.staged_proposal.cards) {
+        stagedCardsCache = d.staged_proposal.cards;
+      }
       document.getElementById('range-entry-drawer').style.display = 'none';
-      refreshTelemetry();
+      await refreshTelemetry();
     }
   } catch(e) {
     alert("Error submitting new range: " + e);
@@ -1050,8 +1096,14 @@ function showGridPreview(key) {
   const titleElem = document.getElementById('preview-matrix-title');
   const riskElem = document.getElementById('preview-matrix-risk');
 
-  const card = stagedCardsCache.find(c => c.key === key);
-  if (!card) return;
+  let card = stagedCardsCache ? stagedCardsCache.find(c => c.key === key) : null;
+  if (!card && window._LAST_TELEMETRY && window._LAST_TELEMETRY.staged_proposal && window._LAST_TELEMETRY.staged_proposal.cards) {
+    card = window._LAST_TELEMETRY.staged_proposal.cards.find(c => c.key === key);
+  }
+  if (!card) {
+    console.warn("[Cockpit] Preview card not found for key:", key, stagedCardsCache);
+    return;
+  }
 
   titleElem.textContent = `🔍 GRID MATRIX PREVIEW: ${card.title.toUpperCase()}`;
   riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${card.side_risk.toFixed(2)}</span>`;
@@ -1087,6 +1139,26 @@ function showGridPreview(key) {
 
   previewBox.style.display = 'block';
   previewBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+
+async function submitDeploy() {
+  try {
+    const res = await fetch('/api/deploy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const d = await res.json();
+    if (d.ok) {
+      document.getElementById('btn-deploy').style.display = 'none';
+      refreshTelemetry();
+    } else {
+      alert("Deploy failed: " + (d.error || "Unknown error"));
+    }
+  } catch(e) {
+    alert("Error submitting deploy: " + e);
+  }
 }
 
 function fmtPnl(val) {
@@ -1175,6 +1247,15 @@ async function refreshTelemetry() {
     const low = d.container?.low || 0;
     const high = d.container?.high || 0;
     const pEq = d.container?.p_eq || 0;
+    if (d.remaining_risk) {
+      const rrEl = document.getElementById('hdr-rem-risk');
+      if (rrEl) {
+        const lRisk = Number(d.remaining_risk.long || 0).toFixed(2);
+        const sRisk = Number(d.remaining_risk.short || 0).toFixed(2);
+        const maxRisk = Number(d.remaining_risk.max || Math.max(d.remaining_risk.long || 0, d.remaining_risk.short || 0)).toFixed(2);
+        rrEl.innerHTML = `<span style="color:var(--bull);">L: $${lRisk}</span> | <span style="color:var(--bear);">S: $${sRisk}</span> <span style="color:var(--warn); font-size:10.5px;">(Max: $${maxRisk})</span>`;
+      }
+    }
     const sStep = d.container?.s_step || 1;
     const liveP = d.live_price || 0;
 
@@ -1289,12 +1370,34 @@ async function refreshTelemetry() {
       `).join('');
     }
 
+    const deployBtn = document.getElementById('btn-deploy');
+    if (deployBtn) {
+      const st = (d.lifecycle && d.lifecycle.status) ? d.lifecycle.status : '';
+      const isStandby = ['ARMED_STANDBY', 'STANDBY', 'AWAITING_ARM'].includes(st) || 
+                        (st !== 'ACTIVE_QUOTING' && st !== 'FLATTENED_DISARMED' && d.grid && d.grid.some(r => r.contracts > 0));
+      deployBtn.style.display = isStandby ? 'inline-flex' : 'none';
+    }
+
     const rawGrid = d.grid || [];
     const grid = [...rawGrid].sort((a, b) => b.index - a.index);
     const tbody = document.getElementById('grid-tbody');
     tbody.innerHTML = '';
 
+    let closestRungIdx = -1;
+    if (liveP > 0 && grid.length > 0) {
+      let minDiff = 999999;
+      grid.forEach(r => {
+        const p = Number(r.price);
+        if (!isNaN(p)) {
+          const diff = Math.abs(p - liveP);
+          if (diff < minDiff) { minDiff = diff; closestRungIdx = r.index; }
+        }
+      });
+    }
+
     grid.forEach(r => {
+      const isProbing = (r.index === closestRungIdx && liveP > 0);
+      const probingTag = isProbing ? '<span class="probing-badge">◄ PROBING HERE</span>' : '';
       const tr = document.createElement('tr');
       const sideColor = r.side === 'LONG' ? 'var(--bull)' : (r.side === 'SHORT' ? 'var(--bear)' : 'var(--accent)');
       const deltaStr = Math.abs(r.snap_delta) > 0.01 ? (r.snap_delta > 0 ? '+' : '') + r.snap_delta.toFixed(2) : '--';
@@ -1308,7 +1411,7 @@ async function refreshTelemetry() {
       tr.innerHTML = `
         <td class="mono" style="font-weight:700; color:var(--text);">L${r.index}</td>
         <td style="color:${sideColor}; font-weight:700;">${r.side}</td>
-        <td><b>${r.role}</b> ${snapBadge}</td>
+        <td><b>${r.role}</b> ${snapBadge} ${probingTag}</td>
         <td class="mono" style="text-align:right; font-weight:700;">${r.price.toFixed(2)}</td>
         <td class="mono" style="text-align:right; color:var(--accent);">${deltaStr}</td>
         <td class="mono" style="text-align:right;">${r.tp.toFixed(2)}</td>
@@ -1625,6 +1728,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
         data = json.loads(body) if body else {}
 
+        if self.path == "/api/deploy":
+            print("[API] /api/deploy received!")
+            if _ON_DEPLOY_CALLBACK:
+                try:
+                    _ON_DEPLOY_CALLBACK()
+                    _TELEMETRY["lifecycle"]["status"] = "ACTIVE_QUOTING"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": True, "status": "DEPLOYED"}).encode("utf-8"))
+                    return
+                except Exception as e:
+                    print(f"[Dashboard] Error in _ON_DEPLOY_CALLBACK: {e}")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": "No deploy callback registered"}).encode("utf-8"))
+            return
+
         if self.path == "/api/flatten":
             print("\n🚨 [API] /api/flatten received!")
             if _ON_FLATTEN_CALLBACK:
@@ -1905,7 +2029,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+            self.wfile.write(json.dumps({"ok": True, "staged_proposal": _TELEMETRY.get("staged_proposal", {})}).encode("utf-8"))
             return
 
         self.send_response(404)

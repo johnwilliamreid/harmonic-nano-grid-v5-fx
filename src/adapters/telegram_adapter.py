@@ -1,3 +1,8 @@
+try:
+    from dashboard import log_telegram_message
+except ImportError:
+    log_telegram_message = None
+
 import os
 from pathlib import Path
 
@@ -92,6 +97,11 @@ class TelegramBridge:
             }
 
         try:
+            if log_telegram_message:
+                try:
+                    log_telegram_message("OUT", text, buttons)
+                except Exception:
+                    pass
             resp = requests.post(f"{self.api_url}/sendMessage", json=payload, timeout=8)
             res_data = resp.json()
             if not res_data.get("ok"):
@@ -397,6 +407,11 @@ class TelegramBridge:
             cb_id = cb.get("id", "")
             msg_id = cb.get("message", {}).get("message_id")
             self.answer_callback(cb_id)
+            if log_telegram_message:
+                try:
+                    log_telegram_message("IN", f"Action: {data}")
+                except Exception:
+                    pass
 
             if data == "wizcancel":
                 self.wizard["state"] = "IDLE"
@@ -473,30 +488,49 @@ class TelegramBridge:
                     self.edit_message(msg_id, "🗑️ <b>Grid Proposal Dismissed.</b>")
                 return
 
+            if data == "deploy:now" or data == "/deploy":
+                if msg_id:
+                    self.edit_message(msg_id, "🚀 <b>DEPLOY COMMAND SENT</b>\n• Limit orders dispatched to CME matching engine.")
+                if self.command_handler:
+                    self.command_handler("deploy:now", None)
+                return
+
+            if data == "act_disarm" or data == "/disarm":
+                if msg_id:
+                    self.edit_message(msg_id, "🛑 <b>GRID DISARMED</b>\n• Reverted to Standby. Zero active orders.")
+                if self.command_handler:
+                    self.command_handler("act_disarm", None)
+                return
+
             if data.startswith("arm:"):
                 parts = data.split(":")
                 full_pid = parts[1]
                 opt_key = parts[2]
                 proposal = self.pending_proposals.get(full_pid)
                 if proposal:
-                    opt = proposal["options"][opt_key]
-                    inst = proposal["instrument"]
+                    opt = proposal["options"].get(opt_key, {})
+                    inst = proposal.get("instrument", "MNQ")
                     mode = self.wizard.get("execution_mode", "BALANCED")
                     
                     if mode == "SHORTS_ONLY":
-                        status_line = "🔴 <b>SHORT-ONLY OVERRIDE ACTIVE (Longs Disarmed)</b>"
+                        status_line = "🔴 <b>SHORT-ONLY (Longs Disarmed)</b>"
                     else:
-                        status_line = "🟢 <b>TWO-SIDED BALANCED ACTIVE</b>"
+                        status_line = "🟢 <b>TWO-SIDED BALANCED</b>"
+
+                    deploy_buttons = [
+                        [("🚀 DEPLOY ORDERS", "deploy:now"), ("🛑 DISARM", "act_disarm")]
+                    ]
 
                     if msg_id:
                         self.edit_message(
                             msg_id,
-                            f"🚀 <b>{inst} GRID ARMED!</b>\n\n"
+                            f"⚡ <b>{inst} GRID PRE-ARMED (STANDBY)</b>\n\n"
                             f"• Contract: <b>{inst}</b>\n"
-                            f"• Profile: <b>{opt['name']}</b>\n"
-                            f"• Execution Directive: {status_line}\n"
-                            f"• Total Side Catastrophic Risk: <b>${opt['total_catastrophic_risk']:.2f}</b>\n\n"
-                            f"<i>In-flight control active: Use /disarmlongs, /disarmshorts, or /twosided anytime.</i>"
+                            f"• Profile: <b>{opt.get('name', opt_key)}</b>\n"
+                            f"• Directive: {status_line}\n"
+                            f"• Total Side Risk: <b>${opt.get('total_catastrophic_risk', 0.0):.2f}</b>\n\n"
+                            f"<i>Orders staged in standby. Tap below to deploy live to CME:</i>",
+                            buttons=deploy_buttons
                         )
                 if self.command_handler:
                     self.command_handler(data, proposal)
@@ -509,6 +543,11 @@ class TelegramBridge:
         if "message" in update and "text" in update["message"]:
             text = update["message"]["text"].strip()
             print(f"📩 [Telegram Text]: {text}")
+            if log_telegram_message:
+                try:
+                    log_telegram_message("IN", text)
+                except Exception:
+                    pass
 
             if self.wizard["state"] == "AWAITING_AGE":
                 try:
