@@ -728,6 +728,7 @@ def run_live_session(args):
         bridge.send("⏸️ <b>Harmonic Nano-Grid Online in Standby</b>\n• Send <code>/newrange [low] [high]</code> or open Cockpit to stage.")
 
     last_hourly_alert_min = -1
+    last_standby_ping_time = 0
     eq_alert_triggered = False
     prior_price_vs_eq = 0
 
@@ -872,6 +873,33 @@ def run_live_session(args):
 
             if now_dt.minute != 50:
                 last_hourly_alert_min = -1
+
+            # Periodic Standby Heartbeat (every 30 mins when idle / disarmed)
+            now_ts = time.time()
+            is_idle = state.get("status") in (
+                "STANDBY",
+                "INVALIDATED_STOPPED",
+                "FLATTENED_DISARMED",
+                "FLATTENED",
+                "DISARMED",
+            )
+            if is_idle and (now_ts - last_standby_ping_time) >= 1800:
+                last_standby_ping_time = now_ts
+                cur_pos = broker.get_position() if (broker and hasattr(broker, "get_position")) else state.get("position", 0)
+                venue_name = getattr(broker, "exec_venue", "Broker")
+                idle_msg = (
+                    "💤 <b>[STANDBY HEARTBEAT] Nano-Grid Idle</b>\n"
+                    "───────────────────────────────────\n"
+                    f"• Status: <code>{state.get('status', 'STANDBY')}</code>\n"
+                    f"• Venue: <b>{venue_name}</b>\n"
+                    f"• Live Price: <code>{live_px:.2f}</code>\n"
+                    f"• Open Inventory: <b>{cur_pos}</b>\n"
+                    "• Action: Stage via Cockpit (:8080) or /newrange [low] [high]"
+                )
+                try:
+                    bridge.send(idle_msg)
+                except Exception as e:
+                    print(f"[Telegram] Failed to send standby heartbeat: {e}")
 
             p_eq = round((geom.range_low + geom.range_high) / 2.0, 2)
             if live_px > 0:
