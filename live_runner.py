@@ -19,30 +19,43 @@ from src.core.data_store import DataStore
 
 load_dotenv()
 
-def get_live_remaining_risk_summary(grid_dict):
-    """Calculates active remaining risk for Telegram telemetry."""
+def get_live_remaining_risk(grid_dict, instrument="MNQ", directive=None):
+    """Calculates single-side directional remaining catastrophic risk directly from rung definitions."""
     if not grid_dict:
-        return ""
+        return {"long": 0.0, "short": 0.0, "max": 0.0}
     long_rem = 0.0
     short_rem = 0.0
+    
+    # If directive disarms a side, honor it immediately
+    disarm_longs = (directive == "DISARM_LONGS")
+    disarm_shorts = (directive == "DISARM_SHORTS")
+
     for idx, r in grid_dict.items():
         side = r.get("side")
         if side not in ("LONG", "SHORT"):
             continue
+        if side == "LONG" and disarm_longs:
+            continue
+        if side == "SHORT" and disarm_shorts:
+            continue
+
         contracts = r.get("contracts", 0)
         cap = r.get("cap", 4)
         rots = r.get("rotations", 0)
         status = str(r.get("status", "")).upper()
-        if "DISARMED" in status or contracts <= 0:
+        
+        if "DISARM" in status or "INVALID" in status or contracts <= 0:
             continue
-        unit_k = r.get("unit_risk") or (r.get("risk_dollar", 0.0) / contracts if contracts > 0 else 0.0)
-        is_exhausted = (cap > 0 and rots >= cap) or ("EXHAUST" in status) or ("EXIT_ONLY" in status)
-        open_pos = abs(r.get("open_position", 0) or r.get("position", 0))
 
-        if is_exhausted:
-            rung_risk = open_pos * unit_k
+        open_pos = abs(r.get("open_position", 0) or r.get("position", 0))
+        is_exhausted = (cap > 0 and rots >= cap) or ("EXHAUST" in status) or ("EXIT_ONLY" in status)
+
+        # Use explicitly stored risk_dollar if open_pos is 0 and not exhausted
+        if open_pos == 0 and not is_exhausted and "risk_dollar" in r and r["risk_dollar"] > 0:
+            rung_risk = float(r["risk_dollar"])
         else:
-            qty = max(contracts, open_pos)
+            unit_k = float(r.get("unit_risk") or (r.get("risk_dollar", 0.0) / contracts if contracts > 0 else 0.0))
+            qty = open_pos if is_exhausted else max(contracts, open_pos)
             rung_risk = qty * unit_k
 
         if side == "LONG":
@@ -50,7 +63,14 @@ def get_live_remaining_risk_summary(grid_dict):
         elif side == "SHORT":
             short_rem += rung_risk
 
-    return f"\n📉 <b>Remaining At Risk:</b> 🟢 Long: <b>${long_rem:.2f}</b> | 🔴 Short: <b>${short_rem:.2f}</b>"
+    long_rem = round(long_rem, 2)
+    short_rem = round(short_rem, 2)
+    max_rem = round(max(long_rem, short_rem), 2)
+    return {"long": long_rem, "short": short_rem, "max": max_rem}
+
+def get_live_remaining_risk_summary(grid_dict, instrument="MNQ"):
+    r = get_live_remaining_risk(grid_dict, instrument)
+    return f"\n📉 <b>Remaining Risk:</b> 🟢 L: <b>${r['long']:.2f}</b> | 🔴 S: <b>${r['short']:.2f}</b> (Max: <b>${r['max']:.2f}</b>)"
 
 # Symmetrical 16x Timeframe Lifespan standard (Freeze at 14x)
 TF_LIFECYCLE = {
@@ -501,6 +521,19 @@ def run_live_session(args):
             if hasattr(dashboard, "_TELEMETRY"):
                 dashboard._TELEMETRY["lifecycle"]["status"] = "ARMED_STANDBY"
             print(f"⚡ [DASHBOARD ARM] Grid PRE-ARMED in STANDBY with posture={posture}. Awaiting Deploy.")
+            if bridge:
+                r_stats = get_live_remaining_risk(grid_by_idx, args.instrument, directive=bias_data.get('directive'))
+                bridge.send(
+                    f"⚡ <b>HARMONIC GRID PRE-ARMED (STANDBY)</b>\n"
+                    f"───────────────────────────────────\n"
+                    f"• Instrument: <code>{args.instrument}</code> ({args.tf})\n"
+                    f"• Boundaries: <code>{geom.range_low:.2f} — {geom.range_high:.2f}</code> (Δ {geom.range_high - geom.range_low:.2f} pts)\n"
+                    f"• Equilibrium (L8): <code>{round((geom.range_low + geom.range_high)/2.0, 2):.2f}</code>\n"
+                    f"• Profile: <b>{active_profile.get('name', 'Staged Profile')}</b> (Posture: <code>{posture}</code>)\n"
+                    f"• Directional Bias: <b>{bias_data.get('regime', 'NEUTRAL')}</b> (Directive: <code>{bias_data.get('directive', 'BALANCED')}</code>)\n"
+                    f"• Max Single-Side Risk: <b>${r_stats['max']:.2f}</b> (🟢 L: ${r_stats['long']:.2f} | 🔴 S: ${r_stats['short']:.2f})\n\n"
+                    f"Awaiting activation via Cockpit <b>⚡ DEPLOY GRID</b> button."
+                )
 
         except Exception as e:
             import traceback
@@ -521,6 +554,14 @@ def run_live_session(args):
         state["status"] = "ACTIVE_QUOTING"
         if hasattr(dashboard, "_TELEMETRY"):
             dashboard._TELEMETRY["lifecycle"]["status"] = "ACTIVE_QUOTING"
+        if bridge:
+            bridge.send(
+                f"🚀 <b>GRID DEPLOYED & ACTIVE QUOTING</b>\n"
+                f"───────────────────────────────────\n"
+                f"• Instrument: <code>{args.instrument}</code>\n"
+                f"• Passive entry limit orders are now resting on <b>{getattr(broker, 'exec_venue', 'PAPER DEMO')}</b>.\n"
+                f"• Session Lifespan: <code>{int(max_duration/60)} mins</code> | Freeze at: <code>{int(freeze_at/60)} mins</code>"
+            )
 
     set_deploy_callback(on_dashboard_deploy)
 
@@ -1101,6 +1142,7 @@ def run_live_session(args):
                     "regime": bias_data.get("regime", "NEUTRAL_EQUILIBRIUM"),
                     "directive": bias_data.get("directive", "TWO_SIDED_BALANCED"),
                 },
+                "remaining_risk": get_live_remaining_risk(grid_by_idx, args.instrument),
                 "lifecycle": {
                     "tf": args.tf,
                     "status": state["status"],

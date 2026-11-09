@@ -412,7 +412,6 @@ class IronbeamAdapter:
                     pm = {k: v for k, v in all_pm.items() if k == target_inst}
                 else:
                     pm = all_pm
-                pm = {k: v for k, v in self._position_map().items() if v != 0}
                 if not pm:
                     print("[ironbeam] ✅ Position already flat (map empty)")
                     break
@@ -825,7 +824,8 @@ class IronbeamAdapter:
 
     def cancel_order(self, oid):
         boid = self._oid_map.get(oid, oid)
-        if boid not in self.active:
+        # Proceed to cancel at broker even if local cache missed it
+        if boid not in self.active and not oid.startswith("GRID_") and not oid.startswith("TP_") and not oid.startswith("SL_"):
             self._oid_map.pop(oid, None)
             return True
 
