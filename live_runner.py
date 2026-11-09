@@ -13,6 +13,7 @@ import dashboard
 
 from src.config import MULTIPLIERS, COMMISSION_PER_RT, TICK_SIZES
 from src.core.grid_geometry import HarmonicGridGeometry
+from src.core.data_engine import GridDataEngine
 from src.core.directional_bias import DirectionalBiasCalculator
 from src.adapters.telegram_adapter import TelegramBridge
 from src.core.data_store import DataStore
@@ -521,6 +522,19 @@ def run_live_session(args):
             if hasattr(dashboard, "_TELEMETRY"):
                 dashboard._TELEMETRY["lifecycle"]["status"] = "ARMED_STANDBY"
             print(f"⚡ [DASHBOARD ARM] Grid PRE-ARMED in STANDBY with posture={posture}. Awaiting Deploy.")
+            try:
+                s_uid = f"SESSION_{args.instrument}_{int(time.time())}"
+                data_engine.start_session(
+                    session_uid=s_uid,
+                    geom=geom,
+                    instrument=args.instrument,
+                    posture=posture,
+                    profile_name=active_profile.get("name", "Harmonic Profile"),
+                    risk=args.risk,
+                    timeframe=args.tf
+                )
+            except Exception as e:
+                print(f"[DataEngine] ⚠️ Arming hook warning: {e}")
             if bridge:
                 r_stats = get_live_remaining_risk(grid_by_idx, args.instrument, directive=bias_data.get('directive'))
                 bridge.send(
@@ -699,6 +713,7 @@ def run_live_session(args):
                 bridge.send("Usage: <code>/newrange [low] [high] [risk]</code>")
             return
 
+    data_engine = GridDataEngine()
     bridge = TelegramBridge(command_handler=handle_telegram_command)
     bridge.start_polling()
 
@@ -949,6 +964,18 @@ def run_live_session(args):
                                     stop_loss=r["sl"],
                                     contracts=fill_qty
                                 )
+                                try:
+                                    data_engine.record_cycle_entry(
+                                        cycle_id=cycle_id,
+                                        rung_idx=idx,
+                                        side=r["side"],
+                                        fill_px=r["fill_price"],
+                                        tp_px=r["tp"],
+                                        sl_px=r["sl"],
+                                        s_harvest=geom.s_harvest
+                                    )
+                                except Exception as e:
+                                    pass
                                 data_store.log_order(tp_oid, args.instrument, bracket_side, r["tp"], fill_qty, "LIMIT", "PLACED", "Harvest TP Bracket")
                                 data_store.log_order(sl_oid, args.instrument, bracket_side, r["sl"], fill_qty, "STOP", "PLACED", "Catastrophic Stop Bracket")
 
@@ -984,6 +1011,16 @@ def run_live_session(args):
                                 r["floating_pnl"] = 0.0
                                 if r.get("cycle_id"):
                                     data_store.record_harvest(r["cycle_id"], fill_px)
+                                    try:
+                                        data_engine.record_cycle_exit(
+                                            cycle_id=r["cycle_id"],
+                                            exit_px=fill_px,
+                                            exit_type="TP_HARVEST",
+                                            net_pnl=gain_usd,
+                                            fee=fee * fill_qty
+                                        )
+                                    except Exception as e:
+                                        pass
                                 r["fill_price"] = None
 
                                 print(f"🏆 [HARVEST COMPLETE] L{idx} harvested at {fill_px:.2f}! Total rotations: {r['rotations']}/{r['cap']}")
@@ -1015,6 +1052,19 @@ def run_live_session(args):
                                 r["status"] = "STOPPED_OUT"
                                 if r.get("cycle_id"):
                                     data_store.close_trade_cycle(r["cycle_id"], fill_px, final_status="STOPPED_OUT")
+                                    try:
+                                        loss_pts = abs(fill_px - (r.get("fill_price") or r["price"]))
+                                        c_qty = r.get("contracts", 1)
+                                        loss_usd = -round(loss_pts * c_qty * mult + (fee * c_qty), 2)
+                                        data_engine.record_cycle_exit(
+                                            cycle_id=r["cycle_id"],
+                                            exit_px=fill_px,
+                                            exit_type="SL_STOP",
+                                            net_pnl=loss_usd,
+                                            fee=fee * c_qty
+                                        )
+                                    except Exception as e:
+                                        pass
                                 print(f"🛑 [STOPPED OUT] L{idx} hit catastrophic stop at {fill_px:.2f}!")
 
                                 state["status"] = "INVALIDATED_STOPPED"
@@ -1113,6 +1163,12 @@ def run_live_session(args):
             bias_data["dir_last"] = args.brk_dir
             bias_data["touches"] = args.brk_touches
             bias_data["k"] = bias_calc.TIMEFRAME_DECAY.get(args.tf, 0.00025)
+
+            if live_px > 0:
+                try:
+                    data_engine.on_market_tick(live_px, now)
+                except Exception as e:
+                    pass
 
             update_telemetry({
                 "venue": getattr(broker, "exec_venue", "PAPER DEMO") if broker else "PAPER DEMO",
