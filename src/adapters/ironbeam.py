@@ -1,3 +1,4 @@
+from src.core.interfaces import BaseBrokerAdapter
 import os
 import ssl
 import time
@@ -6,12 +7,13 @@ import queue
 import json
 import requests
 import pandas as pd
+from src.core.interfaces import BaseBrokerAdapter
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
-class IronbeamAdapter:
+class IronbeamAdapter(BaseBrokerAdapter):
     """Market data from LIVE; orders to DEMO by default.
 
     Hardened flatten v5:
@@ -1004,3 +1006,9 @@ class IronbeamAdapter:
         except Exception:
             pass
         return self.last_price
+
+    def connect(self) -> bool:
+        """Satisfies BaseBrokerAdapter by invoking authenticate()."""
+        if hasattr(self, "authenticate"):
+            return bool(self.authenticate())
+        return True

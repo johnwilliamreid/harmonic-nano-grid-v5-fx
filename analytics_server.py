@@ -249,7 +249,7 @@ class AnalyticsHandler(BaseHTTPRequestHandler):
         self.wfile.write(html.encode("utf-8"))
 
 if __name__ == "__main__":
-    server = HTTPServer(("0.0.0.0", PORT), AnalyticsHandler)
+    server = HTTPServer(("127.0.0.1", PORT), AnalyticsHandler)
     print(f"📊 Analytics Dashboard running on http://127.0.0.1:{PORT}")
     try:
         server.serve_forever()

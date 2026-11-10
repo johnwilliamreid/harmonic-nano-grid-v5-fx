@@ -1,3 +1,6 @@
+from src.core.dispatcher import MultiAccountDispatcher
+from dashboard import set_fleet_flatten_callback, set_account_action_callback, set_account_budget_callback, set_account_instrument_callback
+from src.core.interfaces import OrderIntent
 import json
 import os
 import sys
@@ -124,7 +127,84 @@ def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_hi
         }
     }
 
+
+def dispatch_order_intent(intent: OrderIntent, broker) -> Optional[str]:
+    """
+    Converts a normalized OrderIntent into multi-account fleet execution calls
+    or single broker fallback.
+    """
+    if not broker:
+        return None
+
+    # Fleet Dispatcher delegation
+    if hasattr(broker, "dispatch_intent"):
+        res = broker.dispatch_intent(intent)
+        # Return a truthy composite ID if at least one account succeeded
+        valid_orders = [f"{k}:{v}" for k, v in res.items() if v]
+        return ",".join(valid_orders) if valid_orders else None
+
+    inst = intent.instrument or "MNQ"
+    tif = intent.metadata.get("tif", "GTC")
+
+    if intent.intent_type in ("QUOTE_ENTRY", "TP_HARVEST"):
+        reduce_only = intent.metadata.get("reduce_only", False)
+        oid = intent.metadata.get("oid") or f"{intent.intent_type}_{inst}_L{intent.rung_idx}_{int(time.time())}"
+        try:
+            return broker.place_limit_order(
+                oid=oid,
+                side=intent.side,
+                price=intent.price,
+                size=intent.size,
+                reduce_only=reduce_only,
+                instrument=inst,
+                tif=tif
+            )
+        except TypeError:
+            # Fallback if adapter does not support reduce_only kwarg
+            return broker.place_limit_order(
+                oid=oid,
+                side=intent.side,
+                price=intent.price,
+                size=intent.size,
+                instrument=inst,
+                tif=tif
+            )
+
+    elif intent.intent_type == "SL_STOP":
+        oid = intent.metadata.get("oid") or f"SL_{inst}_L{intent.rung_idx}_{int(time.time())}"
+        if hasattr(broker, "place_stop_order"):
+            return broker.place_stop_order(
+                oid=oid,
+                side=intent.side,
+                price=intent.price,
+                size=intent.size,
+                instrument=inst,
+                tif=tif
+            )
+
+    elif intent.intent_type == "CANCEL":
+        oid = intent.metadata.get("oid")
+        if oid and hasattr(broker, "cancel_order"):
+            return "CANCELLED" if broker.cancel_order(oid) else None
+
+    return None
+
+
 def run_live_session(args):
+    fleet_dispatcher = None
+    if getattr(args, "fleet", True):
+        try:
+            import os
+            accts_path = "accounts.json"
+            if os.path.exists(accts_path):
+                fleet_dispatcher = MultiAccountDispatcher(accts_path)
+                set_fleet_flatten_callback(fleet_dispatcher.flatten_all_fleet)
+                set_account_action_callback(fleet_dispatcher.account_action)
+                set_account_budget_callback(fleet_dispatcher.update_account_budget)
+                set_account_instrument_callback(fleet_dispatcher.update_account_instrument)
+                print(f"[Runner] 🌐 Fleet Dispatcher initialized with {len(fleet_dispatcher.accounts)} accounts!")
+        except Exception as e:
+            print(f"[Runner] ⚠️ Fleet Dispatcher init warning: {e}")
     mult = MULTIPLIERS.get(args.instrument, 2.0)
     fee = COMMISSION_PER_RT.get(args.instrument, 1.94)
 
@@ -250,7 +330,7 @@ def run_live_session(args):
     data_store = DataStore(timeframe=args.tf)
     data_store.register_grid_levels(grid_by_idx, session_id=f"{args.instrument}_{args.tf}_{int(t_start)}")
 
-    start_dashboard_server(port=8080)
+    start_dashboard_server(port=getattr(args, "port", 8090))
 
     # 4. Connect Broker
     broker = None
@@ -951,25 +1031,28 @@ def run_live_session(args):
                                 ts = int(time.time())
 
                                 tp_oid = f"TP_{args.instrument}_L{idx}_{ts}"
-                                tp_boid = broker.place_limit_order(
-                                    oid=tp_oid,
+                                tp_intent = OrderIntent(
+                                    intent_type="TP_HARVEST",
+                                    rung_idx=idx,
                                     side=bracket_side,
                                     price=r["tp"],
                                     size=fill_qty,
-                                    reduce_only=True,
                                     instrument=args.instrument,
-                                    tif="GTC"
+                                    metadata={"oid": tp_oid, "reduce_only": True, "tif": "GTC"}
                                 )
+                                tp_boid = dispatch_order_intent(tp_intent, broker)
 
                                 sl_oid = f"SL_{args.instrument}_L{idx}_{ts}"
-                                sl_boid = broker.place_stop_order(
-                                    oid=sl_oid,
+                                sl_intent = OrderIntent(
+                                    intent_type="SL_STOP",
+                                    rung_idx=idx,
                                     side=bracket_side,
                                     price=r["sl"],
                                     size=fill_qty,
                                     instrument=args.instrument,
-                                    tif="GTC"
+                                    metadata={"oid": sl_oid, "tif": "GTC"}
                                 )
+                                sl_boid = dispatch_order_intent(sl_intent, broker)
 
                                 r["tp_boid"] = tp_boid
                                 r["sl_boid"] = sl_boid
@@ -1146,15 +1229,20 @@ def run_live_session(args):
                     if is_passive:
                         oid = f"GRID_{args.instrument}_L{r['index']}_{int(now)}"
                         order_side = "BUY" if r["side"].upper() in ("LONG", "BUY") else "SELL"
+                        entry_intent = OrderIntent(
+                            intent_type="QUOTE_ENTRY",
+                            rung_idx=r["index"],
+                            side=order_side,
+                            price=r["price"],
+                            tp_price=r.get("tp"),
+                            sl_price=r.get("sl"),
+                            size=r["contracts"],
+                            instrument=args.instrument,
+                            rung_weight=r.get("weight", 0.25),
+                            metadata={"oid": oid, "tif": "GTC"}
+                        )
                         try:
-                            boid = broker.place_limit_order(
-                                oid=oid,
-                                side=order_side,
-                                price=r["price"],
-                                size=r["contracts"],
-                                instrument=args.instrument,
-                                tif="GTC"
-                            )
+                            boid = dispatch_order_intent(entry_intent, broker)
                             if boid:
                                 r["entry_boid"] = boid
                                 r["status"] = "WORKING"
@@ -1236,7 +1324,8 @@ def run_live_session(args):
                     "t_max_min": int(max_duration / 60),
                     "t_freeze_min": int((max_duration - freeze_at) / 60)
                 },
-                "grid": list(grid_by_idx.values())
+                "accounts": fleet_dispatcher.get_fleet_telemetry() if fleet_dispatcher else [],
+            "grid": list(grid_by_idx.values())
             })
 
             time.sleep(0.5)
@@ -1258,6 +1347,8 @@ def run_live_session(args):
 def main():
     parser = argparse.ArgumentParser(description="Harmonic Nano-Grid v4 Live Runner")
     parser.add_argument("--profile", type=str, default="SNAPPED", help="Initial grid profile (SNAPPED, OPTION_A, OPTION_B, OPTION_C, LEAN_2_RUNG)")
+    parser.add_argument("--fleet", action="store_true", default=True, help="Enable Multi-Account Fleet Execution")
+    parser.add_argument("--port", type=int, default=8090, help="Dashboard HTTP port")
     parser.add_argument("--instrument", type=str, default="MNQ", help="Contract symbol (MNQ, MES, NNQ)")
     parser.add_argument("--low", type=float, default=None, help="Container Range Low (optional, can stage via UI/TG)")
     parser.add_argument("--high", type=float, default=None, help="Container Range High (optional, can stage via UI/TG)")

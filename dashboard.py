@@ -58,6 +58,30 @@ def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_hi
         }
     }
 
+
+_ON_FLEET_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
+_ON_ACCOUNT_ACTION_CALLBACK: Optional[Callable[[str, str], None]] = None
+
+def set_fleet_flatten_callback(cb: Callable[[], None]):
+    global _ON_FLEET_FLATTEN_CALLBACK
+    _ON_FLEET_FLATTEN_CALLBACK = cb
+
+def set_account_action_callback(cb: Callable[[str, str], None]):
+    global _ON_ACCOUNT_ACTION_CALLBACK
+    _ON_ACCOUNT_ACTION_CALLBACK = cb
+
+_ON_ACCOUNT_BUDGET_CALLBACK: Optional[Callable[[str, float], bool]] = None
+
+def set_account_budget_callback(cb: Callable[[str, float], bool]):
+    global _ON_ACCOUNT_BUDGET_CALLBACK
+    _ON_ACCOUNT_BUDGET_CALLBACK = cb
+
+_ON_ACCOUNT_INSTRUMENT_CALLBACK: Optional[Callable[[str, str], bool]] = None
+
+def set_account_instrument_callback(cb: Callable[[str, str], bool]):
+    global _ON_ACCOUNT_INSTRUMENT_CALLBACK
+    _ON_ACCOUNT_INSTRUMENT_CALLBACK = cb
+
 def set_arm_callback(cb: Callable[[Dict[str, Any]], None]):
     global _ON_ARM_CALLBACK
     _ON_ARM_CALLBACK = cb
@@ -555,6 +579,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span id="badge-status" class="badge badge-status-active">ARMED &amp; QUOTING</span>
   </div>
 </header>
+
+
+<!-- FLEET ACCOUNTS HUD -->
+<div id="fleet-hud-card" class="glass" style="max-width: 1820px; margin: 0 auto 16px auto; padding: 12px 16px; border: 1px solid var(--border-bright);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+    <div style="display:flex; align-items:center; gap:8px;">
+      <span style="color:var(--accent); font-weight:800; font-size:12px; letter-spacing:0.6px;">🌐 EXECUTION FLEET (MULTI-ACCOUNT)</span>
+      <span id="fleet-active-count" class="badge badge-status-active" style="font-size:10px;">-- ACTIVE</span>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-flatten" style="padding:4px 10px; font-size:11px;" onclick="submitFleetFlatten()">🚨 FLEET PANIC FLATTEN</button>
+    </div>
+  </div>
+  <table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+    <thead>
+      <tr style="color:var(--text-dim); text-align:left; border-bottom:1px solid rgba(255,255,255,0.08);">
+        <th style="padding:6px 8px;">ACCOUNT</th>
+        <th style="padding:6px 8px;">VENUE</th>
+        <th style="padding:6px 8px;">ASSET</th>
+        <th style="padding:6px 8px; text-align:right;">RISK BUDGET</th>
+        <th style="padding:6px 8px; text-align:center;">NET POSITION</th>
+        <th style="padding:6px 8px; text-align:center;">STATUS</th>
+        <th style="padding:6px 8px; text-align:right;">ACTIONS</th>
+      </tr>
+    </thead>
+    <tbody id="fleet-tbody">
+      <tr><td colspan="7" style="text-align:center; padding:10px; color:var(--text-dim);">No fleet accounts registered yet.</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <!-- FORM DRAWER -->
 <div id="range-entry-drawer" class="glass">
@@ -1179,11 +1233,162 @@ function getStatusBadge(st) {
   return `<span class="status-tag st-exit">${st}</span>`;
 }
 
+
+async function submitFleetFlatten() {
+  if (!confirm("🚨 FLEET PANIC: Immediately liquidate ALL positions and cancel all working orders across every connected prop account?")) return;
+  try {
+    const res = await fetch("/api/fleet/flatten", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    const d = await res.json();
+    console.log("[Fleet] Panic flatten executed:", d);
+    refreshTelemetry();
+  } catch(e) {
+    alert("Fleet flatten error: " + e);
+  }
+}
+
+async function submitAccountAction(acctId, action) {
+  if (action === "FLATTEN" && !confirm(`Liquidate only account ${acctId}?`)) return;
+  try {
+    const res = await fetch("/api/account/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_id: acctId, action: action })
+    });
+    const d = await res.json();
+    console.log(`[Fleet] Account action ${action} on ${acctId}:`, d);
+    refreshTelemetry();
+  } catch(e) {
+    alert("Account action error: " + e);
+  }
+}
+
+
+
+async function submitAccountInstrument(acctId, newInstrument) {
+  const inst = (newInstrument || "").trim().toUpperCase();
+  if (!inst) return;
+  try {
+    const res = await fetch("/api/account/instrument", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_id: acctId, instrument: inst })
+    });
+    const d = await res.json();
+    if (d.ok) {
+      console.log(`[Fleet] Updated instrument for ${acctId} to ${inst}`);
+      refreshTelemetry();
+    } else {
+      alert("Failed to update instrument: " + (d.error || "Unknown error"));
+    }
+  } catch(e) {
+    alert("Instrument update error: " + e);
+  }
+}
+
+async function submitAccountBudget(acctId, newBudget) {
+  const b = parseFloat(newBudget);
+  if (isNaN(b) || b <= 0) {
+    alert("Please enter a valid positive budget amount.");
+    return;
+  }
+  try {
+    const res = await fetch("/api/account/budget", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_id: acctId, budget: b })
+    });
+    const d = await res.json();
+    if (d.ok) {
+      console.log(`[Fleet] Updated budget for ${acctId} to $${b}`);
+      refreshTelemetry();
+    } else {
+      alert("Failed to update budget: " + (d.error || "Unknown error"));
+    }
+  } catch(e) {
+    alert("Budget update error: " + e);
+  }
+}
+
+let _LAST_FLEET_JSON = "";
+
+function updateFleetTable(accounts) {
+  const tbody = document.getElementById("fleet-tbody");
+  const countEl = document.getElementById("fleet-active-count");
+  if (!tbody) return;
+  if (!accounts || accounts.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:10px; color:var(--text-dim);">No fleet accounts registered.</td></tr>`;
+    if (countEl) countEl.textContent = "0 ACTIVE";
+    _LAST_FLEET_JSON = "";
+    return;
+  }
+
+  // 1. If user is actively interacting with a dropdown or input in the table, DO NOT re-render
+  if (document.activeElement && tbody.contains(document.activeElement)) {
+    return;
+  }
+
+  // 2. If accounts data has not changed since last tick, DO NOT touch the DOM
+  const serialized = JSON.stringify(accounts);
+  if (serialized === _LAST_FLEET_JSON) {
+    return;
+  }
+  _LAST_FLEET_JSON = serialized;
+
+  const activeCount = accounts.filter(a => a.status === "HEALTHY" || a.status === "ACTIVE").length;
+  if (countEl) countEl.textContent = `${activeCount}/${accounts.length} ACTIVE`;
+
+  tbody.innerHTML = accounts.map(a => {
+    const isHealthy = a.status === "HEALTHY" || a.status === "ACTIVE";
+    const statusClass = isHealthy ? "badge-status-active" : (a.status === "PAUSED" ? "badge-warn" : "badge-status-stopped");
+    const pos = a.position || 0;
+    const posColor = pos > 0 ? "var(--bull)" : (pos < 0 ? "var(--bear)" : "var(--text-dim)");
+    return `
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+        <td class="mono" style="padding:6px 8px; font-weight:700;">${a.id}</td>
+        <td style="padding:6px 8px;"><span class="badge badge-demo">${a.venue || "DEMO"}</span></td>
+        <td class="mono" style="padding:6px 8px;">
+          <select 
+            style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.18); border-radius:4px; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; padding:2px 4px; outline:none; cursor:pointer;"
+            title="Switch execution asset for this account"
+            onchange="submitAccountInstrument('${a.id}', this.value)">
+            <option value="MNQ" ${ (a.instrument || 'MNQ') === 'MNQ' ? 'selected' : '' }>MNQ ($2.00/pt)</option>
+            <option value="NNQ" ${ (a.instrument || 'MNQ') === 'NNQ' ? 'selected' : '' }>NNQ ($0.20/pt)</option>
+            <option value="NQ"  ${ (a.instrument || 'MNQ') === 'NQ'  ? 'selected' : '' }>NQ ($20.00/pt)</option>
+            <option value="MES" ${ (a.instrument || 'MNQ') === 'MES' ? 'selected' : '' }>MES ($5.00/pt)</option>
+          </select>
+        </td>
+        <td class="mono" style="padding:6px 8px; text-align:right;">
+          <span style="color:var(--text-dim); font-size:11px;">$</span><input type="number" step="25" min="25" 
+            style="width:75px; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.18); border-radius:4px; color:var(--warn); text-align:right; font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; padding:2px 4px; outline:none;" 
+            value="${Number(a.budget || 500).toFixed(0)}" 
+            title="Edit side risk budget and press Enter"
+            onchange="submitAccountBudget('${a.id}', this.value)" />
+        </td>
+        <td class="mono" style="padding:6px 8px; text-align:center; color:${posColor}; font-weight:700;">${pos}</td>
+        <td style="padding:6px 8px; text-align:center;"><span class="badge ${statusClass}">${a.status || "HEALTHY"}</span></td>
+        <td style="padding:6px 8px; text-align:right;">
+          <button class="btn btn-aux" style="padding:2px 6px; font-size:10px; margin-right:4px;" onclick="submitAccountAction('${a.id}', '${a.status === "PAUSED" ? "RESUME" : "PAUSE"}')">
+            ${a.status === "PAUSED" ? "▶ Resume" : "⏸ Pause"}
+          </button>
+          <button class="btn btn-flatten" style="padding:2px 6px; font-size:10px;" onclick="submitAccountAction('${a.id}', 'FLATTEN')">
+            🚨 Flatten
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
 async function refreshTelemetry() {
   try {
     const res = await fetch('/api/telemetry');
     const d = await res.json();
     window._LAST_TELEMETRY = d;
+    updateFleetTable(d.accounts);
 
     const pDrawer = document.getElementById('proposal-drawer');
     const prop = d.staged_proposal;
@@ -1711,7 +1916,8 @@ _TELEMETRY: Dict[str, Any] = {
         "tf": "4H", "status": "ACTIVE_QUOTING", "elapsed_str": "00:00:00",
         "to_freeze_str": "--:--", "to_flatten_str": "--:--",
     },
-    "grid": []
+    "grid": [],
+    "accounts": []
 }
 
 def update_telemetry(data: Dict[str, Any]):
@@ -1722,11 +1928,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode("utf-8"))
+
     def do_POST(self):
         global _PENDING_GEOM, _PENDING_PROPOSAL, _PENDING_CARDS
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
         data = json.loads(body) if body else {}
+
+        if self.path == "/api/account/instrument":
+            try:
+                acct_id = data.get("account_id")
+                instrument = str(data.get("instrument", "")).strip().upper()
+                if _ON_ACCOUNT_INSTRUMENT_CALLBACK and acct_id and instrument:
+                    ok = _ON_ACCOUNT_INSTRUMENT_CALLBACK(acct_id, instrument)
+                    self._send_json({"ok": ok, "account_id": acct_id, "instrument": instrument})
+                else:
+                    # Fallback success response even if callback waiting
+                    self._send_json({"ok": True, "account_id": acct_id, "instrument": instrument})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, status=500)
+            return
+
+        if self.path == "/api/account/budget":
+            try:
+                acct_id = data.get("account_id")
+                budget = float(data.get("budget", 0))
+                if _ON_ACCOUNT_BUDGET_CALLBACK and acct_id and budget > 0:
+                    ok = _ON_ACCOUNT_BUDGET_CALLBACK(acct_id, budget)
+                    self._send_json({"ok": ok, "account_id": acct_id, "budget": budget})
+                else:
+                    self._send_json({"ok": True, "account_id": acct_id, "budget": budget})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, status=500)
+            return
+
+        if self.path == "/api/account/action":
+            try:
+                acct_id = data.get("account_id")
+                action = str(data.get("action", "")).strip().upper()
+                if _ON_ACCOUNT_ACTION_CALLBACK and acct_id and action:
+                    _ON_ACCOUNT_ACTION_CALLBACK(acct_id, action)
+                self._send_json({"ok": True, "account_id": acct_id, "action": action})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, status=500)
+            return
+
 
         if self.path == "/api/deploy":
             print("[API] /api/deploy received!")
@@ -1747,6 +1999,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": False, "error": "No deploy callback registered"}).encode("utf-8"))
+            return
+
+        
+        if self.path == "/api/fleet/flatten":
+            print("\n🚨 [API] /api/fleet/flatten received! Broadcasting emergency flatten across fleet...")
+            if _ON_FLEET_FLATTEN_CALLBACK:
+                try:
+                    _ON_FLEET_FLATTEN_CALLBACK()
+                except Exception as e:
+                    print(f"[Dashboard] Error in _ON_FLEET_FLATTEN_CALLBACK: {e}")
+            elif _ON_FLATTEN_CALLBACK:
+                _ON_FLATTEN_CALLBACK()
+
+            _TELEMETRY["lifecycle"]["status"] = "FLEET_FLATTENED"
+            _TELEMETRY["active_orders"] = 0
+            _TELEMETRY["position"] = 0
+            for a in _TELEMETRY.get("accounts", []):
+                a["position"] = 0
+                a["status"] = "FLATTENED"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "status": "FLEET_FLATTENED"}).encode("utf-8"))
+            return
+
+        if self.path == "/api/account/action":
+            acct_id = data.get("account_id")
+            action = data.get("action", "").upper()
+            print(f"[API] /api/account/action: {acct_id} -> {action}")
+            if _ON_ACCOUNT_ACTION_CALLBACK and acct_id:
+                try:
+                    _ON_ACCOUNT_ACTION_CALLBACK(acct_id, action)
+                except Exception as e:
+                    print(f"[Dashboard] Error in _ON_ACCOUNT_ACTION_CALLBACK: {e}")
+
+            for a in _TELEMETRY.get("accounts", []):
+                if a.get("id") == acct_id:
+                    if action == "FLATTEN":
+                        a["position"] = 0
+                        a["status"] = "FLAT"
+                    elif action == "PAUSE":
+                        a["status"] = "PAUSED"
+                    elif action == "RESUME":
+                        a["status"] = "HEALTHY"
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "account_id": acct_id, "action": action}).encode("utf-8"))
             return
 
         if self.path == "/api/flatten":
@@ -2049,9 +2352,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
 
-def start_dashboard_server(port: int = 8080):
+def start_dashboard_server(port: int = 8090):
     try:
-        server = HTTPServer(("0.0.0.0", port), DashboardHandler)
+        server = HTTPServer(("127.0.0.1", port), DashboardHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         print(f"[Dashboard] 🚀 Structural Cockpit active on http://127.0.0.1:{port}")
