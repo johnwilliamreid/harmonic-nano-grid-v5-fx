@@ -263,6 +263,10 @@ class HarmonicGridGeometry:
                 cap = 1   # Structural exhaustion line: 1-shot limit
             elif "SWEEP_WICK" in role:
                 cap = 1   # Outer boundary sweep: 1-shot limit
+            elif "EXT_RUNWAY" in role:
+                cap = 1   # Perimeter extension runway: 1-shot limit (protect against runaway momentum)
+            elif idx in (1, 2, 14, 15) and "BREAKER" not in role:
+                cap = 1   # Outer boundary deciles default to 1 rotation unless snapped to breaker
             elif "QUARTILE_ANCHOR" in role:
                 # Quartile adopts the cap of its closest neighbor inward toward Equilibrium (L8)
                 inward_neighbor_idx = (idx + 1) if idx < 8 else (idx - 1)
