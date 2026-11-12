@@ -2084,9 +2084,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 disc_rungs = card.get("disc", [5, 6, 3])
                 prem_rungs = card.get("prem", [10, 11, 13])
 
+                t_map = card.get("target_mapping") or (_PENDING_PROPOSAL.get("options", {}).get(mode, {}).get("target_mapping") if _PENDING_PROPOSAL else None)
                 grid_dict = geom.generate_grid(
                     active_discount_rungs=disc_rungs,
                     active_premium_rungs=prem_rungs,
+                    target_mapping=t_map,
                     brk_low_back=setup["brk_low_back"],
                     brk_low_front=setup["brk_low_front"],
                     brk_high_front=setup["brk_high_front"],
@@ -2187,6 +2189,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 brk_high_front=sf,
                 brk_high_back=sb
             )
+            # Directional Trend Breaker Profile Injection
+            try:
+                cur_bias_score = getattr(self, "last_bias_score", 0.0)
+                trend_dir = "BULLISH" if cur_bias_score >= 0 else "BEARISH"
+                f_edge = df if trend_dir == 'BULLISH' else sf
+                b_edge = db if trend_dir == 'BULLISH' else sb
+                trend_prof = geom.generate_trend_breaker_profile(
+                    direction=trend_dir,
+                    brk_front=f_edge,
+                    brk_back=b_edge
+                )
+                if 'options' in proposal and (abs(cur_bias_score) >= 0.75 or 'EXPANSION' in str(proposal.get('diagnosis', {}).get('regime', ''))):
+                    proposal.setdefault('diagnosis', {})['best_fit'] = 'OPTION_F_TREND_BREAKER'
+            except Exception as e:
+                pass
 
             bias_calc = DirectionalBiasCalculator(default_timeframe=tf)
             bias_res = bias_calc.compute_bias(
@@ -2222,7 +2239,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ("OPTION_B", "Conservative Backbone (3-Rung)", opts.get("OPTION_B", {}).get("discount_rungs", [2,4,6]), opts.get("OPTION_B", {}).get("premium_rungs", [10,12,14])),
                 ("OPTION_C", "Structural Core (4-Rung)", opts.get("OPTION_C", {}).get("discount_rungs", [3,4,6,7]), opts.get("OPTION_C", {}).get("premium_rungs", [9,10,12,13])),
                 ("SNAPPED", "Breaker Snapped (Mitigation Priority)", dyn_custom["SNAPPED"]["discount_rungs"], dyn_custom["SNAPPED"]["premium_rungs"]),
-                ("LEAN_2_RUNG", "Lean Mitigation Core", dyn_custom["LEAN_2_RUNG"]["discount_rungs"], dyn_custom["LEAN_2_RUNG"]["premium_rungs"])
+                ("LEAN_2_RUNG", "Lean Mitigation Core", dyn_custom["LEAN_2_RUNG"]["discount_rungs"], dyn_custom["LEAN_2_RUNG"]["premium_rungs"]),
+                ("OPTION_F_TREND_BREAKER", "Trend Breaker (Structural Targets)", opts.get("OPTION_F_TREND_BREAKER", {}).get("discount_rungs", []), opts.get("OPTION_F_TREND_BREAKER", {}).get("premium_rungs", [])),
             ]
 
             calc_cards = []
@@ -2231,6 +2249,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 g = geom.generate_grid(
                     active_discount_rungs=disc,
                     active_premium_rungs=prem,
+                    target_mapping=opts.get(opt_key, {}).get("target_mapping"),
                     brk_low_back=db, brk_low_front=df,
                     brk_high_front=sf, brk_high_back=sb
                 )

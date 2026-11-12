@@ -82,7 +82,9 @@ class DirectionalBiasCalculator:
         integrity_delta = (retention_demand - retention_supply) / max_ret if max_ret > 0 else 0.0
         s_integrity = integrity_delta * 100.0
 
-        decay_touch = math.exp(-k * max(0.0, age_last_touch_secs))
+        # Decay touch reaction over elapsed time so sub-score does not freeze
+        effective_touch_age = age_last_touch_secs + (elapsed_seconds or 0.0)
+        decay_touch = math.exp(-k * max(0.0, effective_touch_age))
         touch_dir = 1.0 if touch_side.upper() in ("DEMAND", "UP", "LONG") else -1.0
         s_touch_reaction = touch_dir * 100.0 * decay_touch
 
@@ -96,23 +98,37 @@ class DirectionalBiasCalculator:
         s_bias = (0.60 * s_spatial) + (0.20 * s_chrono) + (0.20 * s_price_disp)
         s_bias = max(-100.0, min(100.0, round(s_bias, 2)))
 
-        # 5. Directives
-        is_breaking_down = p_now < breaker_low_front
-        is_breaking_out = p_now > breaker_high_front
+        # 5. Directives with Hysteresis & Polarity Alignment (prevents 1-tick flapping)
+        prior = str(kwargs.get("prior_regime", "NEUTRAL_EQUILIBRIUM")).upper()
+        breakout_buf = 0.05 * delta_p  # 5% range exit deadband (~0.8 harmonic step)
 
-        if is_breaking_out or s_bias >= 40.0:
+        was_strong_bull = prior == "STRONG_BULLISH"
+        was_mild_bull = prior in ("MILD_BULLISH", "STRONG_BULLISH")
+        was_strong_bear = prior == "STRONG_BEARISH"
+        was_mild_bear = prior in ("MILD_BEARISH", "STRONG_BEARISH")
+
+        bull_breakout = (
+            p_now > (breaker_high_front if not was_strong_bull else breaker_high_front - breakout_buf)
+            and s_bias > 0.0
+        )
+        bear_breakdown = (
+            p_now < (breaker_low_front if not was_strong_bear else breaker_low_front + breakout_buf)
+            and s_bias < 0.0
+        )
+
+        if bull_breakout or s_bias >= (25.0 if was_strong_bull else 40.0):
             regime = "STRONG_BULLISH"
             directive = "DISARM_SHORTS"
             risk_long, risk_short = 1.0, 0.0
-        elif s_bias >= 15.0:
+        elif s_bias >= (5.0 if was_mild_bull else 15.0):
             regime = "MILD_BULLISH"
             directive = "TWO_SIDED_BULLISH_SKEW"
             risk_long, risk_short = 1.0, 0.60
-        elif is_breaking_down or s_bias <= -40.0:
+        elif bear_breakdown or s_bias <= (-25.0 if was_strong_bear else -40.0):
             regime = "STRONG_BEARISH"
             directive = "DISARM_LONGS"
             risk_long, risk_short = 0.0, 1.0
-        elif s_bias <= -15.0:
+        elif s_bias <= (-5.0 if was_mild_bear else -15.0):
             regime = "MILD_BEARISH"
             directive = "TWO_SIDED_BEARISH_SKEW"
             risk_long, risk_short = 0.60, 1.0

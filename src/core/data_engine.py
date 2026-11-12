@@ -88,6 +88,10 @@ class GridDataEngine:
                 hit_1_0x_tp INTEGER DEFAULT 0,
                 hit_1_5x_tp INTEGER DEFAULT 0,
                 hit_2_0x_tp INTEGER DEFAULT 0,
+                model_type TEXT DEFAULT 'MEAN_REVERSION',
+                target_milestone REAL,
+                structural_dist_pts REAL,
+                milestone_progress REAL DEFAULT 0.0,
                 exit_type TEXT,
                 net_pnl REAL,
                 fee REAL
@@ -128,6 +132,21 @@ class GridDataEngine:
             );
             """)
             conn.commit()
+            # Migrate level_cycles for Trend Breaker if needed
+            try:
+                cur = conn.cursor()
+                cols = [r[1] for r in cur.execute("PRAGMA table_info(level_cycles)").fetchall()]
+                if "model_type" not in cols:
+                    cur.execute("ALTER TABLE level_cycles ADD COLUMN model_type TEXT DEFAULT 'MEAN_REVERSION'")
+                if "target_milestone" not in cols:
+                    cur.execute("ALTER TABLE level_cycles ADD COLUMN target_milestone REAL")
+                if "structural_dist_pts" not in cols:
+                    cur.execute("ALTER TABLE level_cycles ADD COLUMN structural_dist_pts REAL")
+                if "milestone_progress" not in cols:
+                    cur.execute("ALTER TABLE level_cycles ADD COLUMN milestone_progress REAL DEFAULT 0.0")
+                conn.commit()
+            except Exception:
+                pass
 
     def start_session(self, session_uid: str, geom: Any, instrument: str, posture: str, profile_name: str, risk: float, timeframe: str = "15m"):
         """Initializes a new tracking session and builds the counterfactual Option A shadow grid."""
@@ -169,8 +188,9 @@ class GridDataEngine:
             }
         logger.info(f"Initialized GridDataEngine session {session_uid} with {len(self.shadow_grid)} shadow rungs.")
 
-    def record_cycle_entry(self, cycle_id: str, rung_idx: int, side: str, fill_px: float, tp_px: float, sl_px: float, s_harvest: float):
+    def record_cycle_entry(self, cycle_id: str, rung_idx: int, side: str, fill_px: float, tp_px: float, sl_px: float, s_harvest: float, model_type: str = "MEAN_REVERSION", target_milestone: Optional[float] = None):
         """Registers a live entry fill and starts active MFE/MAE tracking."""
+        t_dist = abs(tp_px - fill_px)
         self.active_cycles[cycle_id] = {
             "session_uid": self.session_uid,
             "rung_idx": rung_idx,
@@ -179,6 +199,10 @@ class GridDataEngine:
             "tp_price": tp_px,
             "sl_price": sl_px,
             "s_harvest": s_harvest if s_harvest > 0 else (self.geom.s_harvest if self.geom else 1.0),
+            "model_type": model_type,
+            "target_milestone": target_milestone,
+            "structural_dist_pts": t_dist,
+            "milestone_progress": 0.0,
             "entry_time": time.time(),
             "mae_pts": 0.0,
             "mfe_pts": 0.0,
@@ -213,6 +237,10 @@ class GridDataEngine:
             if fav >= 1.0 * s_h: c["hit_1_0x"] = True
             if fav >= 1.5 * s_h: c["hit_1_5x"] = True
             if fav >= 2.0 * s_h: c["hit_2_0x"] = True
+
+            if c.get("model_type") == "TREND_BREAKER":
+                dist = c.get("structural_dist_pts", 0.0)
+                c["milestone_progress"] = round(c["mfe_pts"] / dist, 3) if dist > 0 else 0.0
 
         # 2. Simulate Counterfactual Shadow Option A Benchmark
         for idx, r in self.shadow_grid.items():
@@ -308,3 +336,24 @@ class GridDataEngine:
                 conn.commit()
         except Exception as e:
             logger.warning(f"Error persisting cycle {cycle_id} to data_engine: {e}")
+
+    def get_trend_breaker_scorecard(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT 
+                    rung_idx,
+                    side,
+                    target_milestone,
+                    COUNT(*) as fills,
+                    SUM(CASE WHEN exit_type LIKE '%TP%' OR exit_type LIKE '%HARVEST%' THEN 1 ELSE 0 END) as harvests,
+                    SUM(CASE WHEN exit_type LIKE '%STOP%' OR exit_type LIKE '%SL%' THEN 1 ELSE 0 END) as stops,
+                    ROUND(AVG(milestone_progress) * 100.0, 1) as avg_progress_pct,
+                    ROUND(AVG(mae_pts), 2) as avg_drawdown_pts,
+                    ROUND(SUM(net_pnl), 2) as net_pnl_usd
+                FROM level_cycles
+                WHERE model_type = 'TREND_BREAKER' AND exit_type IS NOT NULL
+                GROUP BY rung_idx, side, target_milestone
+                ORDER BY rung_idx ASC
+            """).fetchall()
+            return [dict(r) for r in rows]

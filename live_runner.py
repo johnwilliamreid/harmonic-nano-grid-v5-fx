@@ -406,7 +406,7 @@ def run_live_session(args):
         nonlocal active_profile, grid_dict, grid_by_idx
 
         current_name = state.get("active_profile_name")
-        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C"):
+        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D", "OPTION_E", "OPTION_F_TREND_BREAKER"):
             if current_name and (opt_key in current_name or (opt_key == "SNAPPED" and "Mitigation Priority" in current_name)):
                 print(f"[RE-ARM GUARD] Grid already armed with {current_name}. Skipping redundant order cycling.")
                 return True
@@ -443,6 +443,7 @@ def run_live_session(args):
         new_grid = geom.generate_grid(
             active_discount_rungs=opt["discount_rungs"],
             active_premium_rungs=opt["premium_rungs"],
+            target_mapping=opt.get("target_mapping"),
             brk_low_back=b_lb or cur_low,
             brk_low_front=b_lf,
             brk_low_poc=args.brk_low_poc,

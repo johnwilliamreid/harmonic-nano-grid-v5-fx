@@ -121,16 +121,112 @@ class HarmonicGridGeometry:
             "best_fit": fit
         }
 
+
+    def generate_trend_breaker_profile(
+        self,
+        direction: str,
+        brk_front: Optional[float] = None,
+        brk_back: Optional[float] = None,
+        brk_poc: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Directional Trend-Continuation Model:
+        - Structural Entries: Mitigation, Absorption, and Breaker Front.
+        - Inclusive Equilibrium Domain Rule:
+            BULLISH: Allowed strictly <= 8 (Discount + Midline)
+            BEARISH: Allowed strictly >= 8 (Premium + Midline)
+        - Targeted Structural Exits:
+            Mitigation    -> 0.50 (L8 Equilibrium)
+            Absorption    -> 0.75 (L12 Quartile for Longs / L4 for Shorts)
+            Breaker Front -> 1.00 (L16 External Boundary for Longs / L0 for Shorts)
+        - Rotation Cap: Strictly 1 rotation per level.
+        """
+        is_bull = str(direction).upper() in ("BULLISH", "LONG", "BUY")
+        span = self.range_high - self.range_low
+
+        default_front = (self.range_low + 0.3125 * span) if is_bull else (self.range_high - 0.3125 * span)
+        default_back = (self.range_low + 0.1875 * span) if is_bull else (self.range_high - 0.1875 * span)
+
+        f_px = brk_front if (brk_front is not None and brk_front > 0) else default_front
+        b_px = brk_back if (brk_back is not None and brk_back > 0) else default_back
+
+        f_idx = max(1, min(15, int(round((f_px - self.range_low) / self.s_step))))
+        b_idx = max(1, min(15, int(round((b_px - self.range_low) / self.s_step))))
+        abs_idx = int(round((f_idx + b_idx) / 2.0))
+
+        if is_bull:
+            # Ensure 3 distinct discount levels (1 <= r_idx <= 7)
+            raw_front = max(f_idx, b_idx)
+            raw_mit = min(f_idx, b_idx)
+            # Clamp front edge to L7 so it operates as a valid discount entry below Eq
+            front_idx = min(7, max(3, raw_front if raw_front < 8 else 7))
+            mit_idx = max(1, min(front_idx - 2, raw_mit))
+            abs_idx = int(round((front_idx + mit_idx) / 2.0))
+            if abs_idx == front_idx:
+                abs_idx = front_idx - 1
+            if abs_idx == mit_idx:
+                mit_idx = max(1, abs_idx - 1)
+            
+            candidate_rungs = [
+                (front_idx, 'BREAKER_FRONT', 14),  # Front edge -> 0.875 (L14 Sweep Wick, -1/8 retracted)
+                (abs_idx, 'ABSORPTION', 10),       # Mid absorption -> 0.625 (L10 Premium Transit, -1/8 retracted)
+                (mit_idx, 'MITIGATION', 8)         # Deepest mitigation -> 0.50 (L8 Equilibrium Magnet)
+            ]
+            active_entries = {}
+            for r_idx, role, tp_idx in candidate_rungs:
+                if 1 <= r_idx <= 7 and r_idx not in active_entries:
+                    active_entries[r_idx] = {'role': role, 'tp_idx': tp_idx}
+            return {
+                'name': 'OPTION_F_TREND_BREAKER',
+                'label': 'Directional Trend Breaker (Bullish)',
+                'direction': 'LONG',
+                'discount_rungs': sorted(list(active_entries.keys())),
+                'premium_rungs': [],
+                'target_mapping': active_entries,
+                'default_cap': 1
+            }
+        else:
+            # Ensure 3 distinct premium levels (9 <= r_idx <= 15)
+            raw_front = min(f_idx, b_idx)
+            raw_mit = max(f_idx, b_idx)
+            # Clamp front edge to L9 so it operates as a valid premium entry above Eq
+            front_idx = max(9, min(13, raw_front if raw_front > 8 else 9))
+            mit_idx = min(15, max(front_idx + 2, raw_mit))
+            abs_idx = int(round((front_idx + mit_idx) / 2.0))
+            if abs_idx == front_idx:
+                abs_idx = front_idx + 1
+            if abs_idx == mit_idx:
+                mit_idx = min(15, abs_idx + 1)
+            
+            candidate_rungs = [
+                (front_idx, 'BREAKER_FRONT', 2),   # Front edge -> 0.125 (L2 Sweep Wick, +1/8 retracted)
+                (abs_idx, 'ABSORPTION', 6),        # Mid absorption -> 0.375 (L6 Discount Transit, +1/8 retracted)
+                (mit_idx, 'MITIGATION', 8)         # Deepest mitigation -> 0.50 (L8 Equilibrium Magnet)
+            ]
+            active_entries = {}
+            for r_idx, role, tp_idx in candidate_rungs:
+                if 9 <= r_idx <= 15 and r_idx not in active_entries:
+                    active_entries[r_idx] = {'role': role, 'tp_idx': tp_idx}
+            return {
+                'name': 'OPTION_F_TREND_BREAKER',
+                'label': 'Directional Trend Breaker (Bearish)',
+                'direction': 'SHORT',
+                'discount_rungs': [],
+                'premium_rungs': sorted(list(active_entries.keys())),
+                'target_mapping': active_entries,
+                'default_cap': 1
+            }
     def generate_grid(
         self,
-        active_discount_rungs: Optional[List[int]] = None,
-        active_premium_rungs: Optional[List[int]] = None,
+        active_discount_rungs: List[int],
+        active_premium_rungs: List[int],
         brk_low_front: Optional[float] = None,
         brk_low_back: Optional[float] = None,
         brk_low_poc: Optional[float] = None,
         brk_high_front: Optional[float] = None,
         brk_high_back: Optional[float] = None,
-        brk_high_poc: Optional[float] = None
+        brk_high_poc: Optional[float] = None,
+        target_mapping: Optional[Dict[int, Any]] = None
     ) -> Dict[int, Dict[str, Any]]:
         raw_prices = [round_to_tick(self.range_low + i * self.s_step, self.tick_size) for i in range(17)]
         max_snap_dist = 0.60 * self.s_step
@@ -291,13 +387,23 @@ class HarmonicGridGeometry:
             if side == "LONG":
                 dist_stop = abs(px - self.sl_low)
                 k_i = (dist_stop * self.multiplier) + self.fee_per_rt
-                tp_px = round_to_tick(px + self.s_harvest, self.tick_size)
+                if target_mapping and idx in target_mapping:
+                    tp_idx = target_mapping[idx]["tp_idx"]
+                    tp_px = round_to_tick(self.range_low + tp_idx * self.s_step, self.tick_size)
+                    cap = 1
+                else:
+                    tp_px = round_to_tick(px + self.s_harvest, self.tick_size)
                 sl_px = self.sl_low
                 r_target = r_target_disc
             elif side == "SHORT":
                 dist_stop = abs(px - self.sl_high)
                 k_i = (dist_stop * self.multiplier) + self.fee_per_rt
-                tp_px = round_to_tick(px - self.s_harvest, self.tick_size)
+                if target_mapping and idx in target_mapping:
+                    tp_idx = target_mapping[idx]["tp_idx"]
+                    tp_px = round_to_tick(self.range_low + tp_idx * self.s_step, self.tick_size)
+                    cap = 1
+                else:
+                    tp_px = round_to_tick(px - self.s_harvest, self.tick_size)
                 sl_px = self.sl_high
                 r_target = r_target_prem
             else:
@@ -316,10 +422,13 @@ class HarmonicGridGeometry:
                 contracts = 0
                 realized_risk = 0.0
 
+            if target_mapping is not None and idx in target_mapping:
+                cap = 1
             reward_pts = round_to_tick(abs(tp_px - px), self.tick_size)
-            reward_dollar = round(contracts * reward_pts * self.multiplier, 2)
+            gross_reward = contracts * reward_pts * self.multiplier
+            net_reward = max(0.0, gross_reward - (self.fee_per_rt * contracts))
+            reward_dollar = round(net_reward, 2)
             rr_ratio = round(reward_dollar / realized_risk, 2) if realized_risk > 0 else 0.0
-
             grid[idx] = {
                 "index": idx,
                 "role": role,
@@ -632,6 +741,22 @@ class HarmonicGridGeometry:
                 "is_best_fit": (opt_key == composite_fit)
             }
 
+        # Option F: Directional Trend Breaker Profile
+        try:
+            brk_f = brk_low_front or brk_high_front
+            brk_b = brk_low_back or brk_high_back
+            brk_p = brk_low_poc or brk_high_poc
+            trend_dir = "BULLISH" if (brk_low_front or 0) > 0 else ("BEARISH" if (brk_high_front or 0) > 0 else "BULLISH")
+            opt_f = self.generate_trend_breaker_profile(
+                direction=trend_dir,
+                brk_front=brk_f,
+                brk_back=brk_b,
+                brk_poc=brk_p
+            )
+            opt_f["desc"] = "Structural Directional Breaker (Mitigation -> 0.50, Absorption -> 0.75, Front -> 1.00)"
+            options["OPTION_F_TREND_BREAKER"] = opt_f
+        except Exception as _e:
+            pass
         return {
             "instrument": self.instrument,
             "tick_size": self.tick_size,
