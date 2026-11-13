@@ -557,7 +557,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div>
     <div class="brand-title">
       <div class="brand-dot"></div>
-      <span>HARMONIC NANO-GRID V4</span>
+      <span>HARMONIC NANO-GRID V5</span>
       <span style="font-weight: 400; color: var(--text-muted);">| Structural Cockpit HUD</span>
     </div>
     <div style="color: var(--text-muted); font-size: 11px; margin-top: 3px;" class="mono">

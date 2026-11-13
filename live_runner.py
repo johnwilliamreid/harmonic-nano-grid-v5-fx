@@ -213,7 +213,7 @@ def run_live_session(args):
     init_high = args.high if has_init_range else 28000.00
 
     print("=" * 70)
-    print("🚀 HARMONIC NANO-GRID V4 EXECUTION RUNNER")
+    print("🚀 HARMONIC NANO-GRID V5 EXECUTION RUNNER")
     print(f"Asset: {args.instrument} | Multiplier: ${mult}/pt | Fee: ${fee}/RT")
     if has_init_range:
         print(f"Container: {args.low:.2f} - {args.high:.2f} (Δ {args.high - args.low:.2f} pts)")
@@ -1347,7 +1347,7 @@ def run_live_session(args):
         print("[Runner] 👋 Session closed cleanly.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Harmonic Nano-Grid v4 Live Runner")
+    parser = argparse.ArgumentParser(description="Harmonic NANO-GRID V5 Live Runner")
     parser.add_argument("--profile", type=str, default="SNAPPED", help="Initial grid profile (SNAPPED, OPTION_A, OPTION_B, OPTION_C, LEAN_2_RUNG)")
     parser.add_argument("--fleet", action="store_true", default=True, help="Enable Multi-Account Fleet Execution")
     parser.add_argument("--port", type=int, default=8090, help="Dashboard HTTP port")
