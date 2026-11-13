@@ -1,3 +1,4 @@
+from typing import List, Dict, Any, Optional
 import os
 import time
 import sqlite3
@@ -20,7 +21,7 @@ class GridDataEngine:
         self.geom: Any = None
         self.instrument: str = "MNQ"
         self.multiplier: float = 2.0
-        self.fee_per_rt: float = 1.94
+        self.fee_per_rt: float = 1.86
 
         # Active tracking states (in-memory for sub-microsecond updates)
         self.active_cycles: Dict[str, Dict[str, Any]] = {}
@@ -154,7 +155,7 @@ class GridDataEngine:
         self.geom = geom
         self.instrument = instrument
         self.multiplier = getattr(geom, "multiplier", 2.0)
-        self.fee_per_rt = getattr(geom, "fee_per_rt", 1.94)
+        self.fee_per_rt = getattr(geom, "fee_per_rt", 1.86)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
@@ -357,3 +358,200 @@ class GridDataEngine:
                 ORDER BY rung_idx ASC
             """).fetchall()
             return [dict(r) for r in rows]
+
+    # ==========================================================================
+    # READ-ONLY ADVISORY: 17-RUNG MFE/MAE & TP RECOMMENDATIONS (NO ORDER CHANGES)
+    # ==========================================================================
+    def _ensure_shadow_excursion_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS shadow_rung_excursions (
+                touch_id TEXT PRIMARY KEY,
+                session_uid TEXT,
+                instrument TEXT,
+                rung_idx INTEGER,
+                side TEXT,
+                touch_price REAL,
+                s_harvest REAL,
+                touch_time REAL,
+                mfe_pts REAL DEFAULT 0.0,
+                mae_pts REAL DEFAULT 0.0,
+                mfe_ratio REAL DEFAULT 0.0,
+                hit_0_5x INTEGER DEFAULT 0,
+                hit_1_0x INTEGER DEFAULT 0,
+                hit_1_5x INTEGER DEFAULT 0,
+                resolved INTEGER DEFAULT 0
+            );
+            """)
+            conn.commit()
+
+    def track_virtual_rung_touches(self, live_px: float, now: float, geom: Any, instrument: str = "MNQ"):
+        """Passive observer: logs virtual 15-min excursions across all 17 rungs."""
+        if not geom or live_px <= 0:
+            return
+        if not hasattr(self, "_virtual_touches"):
+            self._ensure_shadow_excursion_table()
+            self._virtual_touches = {}
+            self._last_touch_ts = {}
+
+        s_step = getattr(geom, "s_step", 0.0)
+        s_harvest = getattr(geom, "s_harvest", 2.0 * s_step)
+        r_low = getattr(geom, "range_low", 0.0)
+        if s_step <= 0:
+            return
+
+        for idx in range(1, 16):
+            if idx == 8:
+                continue
+            rung_px = r_low + idx * s_step
+            side = "LONG" if idx < 8 else "SHORT"
+            if abs(live_px - rung_px) <= (0.15 * s_step):
+                if (now - self._last_touch_ts.get(idx, 0.0)) >= 900.0:
+                    tid = f"VIRT_{instrument}_L{idx}_{int(now)}"
+                    self._last_touch_ts[idx] = now
+                    self._virtual_touches[tid] = {
+                        "session_uid": getattr(self, "session_uid", "UNKNOWN"),
+                        "instrument": instrument,
+                        "rung_idx": idx,
+                        "side": side,
+                        "touch_price": rung_px,
+                        "s_harvest": s_harvest,
+                        "touch_time": now,
+                        "mfe_pts": 0.0,
+                        "mae_pts": 0.0,
+                    }
+
+        completed = []
+        for tid, vt in list(self._virtual_touches.items()):
+            fav = (live_px - vt["touch_price"]) if vt["side"] == "LONG" else (vt["touch_price"] - live_px)
+            adv = (vt["touch_price"] - live_px) if vt["side"] == "LONG" else (live_px - vt["touch_price"])
+            vt["mfe_pts"] = max(vt["mfe_pts"], fav)
+            vt["mae_pts"] = max(vt["mae_pts"], adv)
+            if (now - vt["touch_time"]) >= 900.0:
+                completed.append(tid)
+
+        if completed:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    for tid in completed:
+                        vt = self._virtual_touches.pop(tid)
+                        sh = vt["s_harvest"] if vt["s_harvest"] > 0 else 1.0
+                        conn.execute("""
+                        INSERT OR REPLACE INTO shadow_rung_excursions
+                        (touch_id, session_uid, instrument, rung_idx, side, touch_price, s_harvest,
+                         touch_time, mfe_pts, mae_pts, mfe_ratio, hit_0_5x, hit_1_0x, hit_1_5x, resolved)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        """, (
+                            tid, vt["session_uid"], vt["instrument"], vt["rung_idx"], vt["side"],
+                            vt["touch_price"], sh, vt["touch_time"], vt["mfe_pts"], vt["mae_pts"],
+                            round(vt["mfe_pts"] / sh, 3),
+                            1 if vt["mfe_pts"] >= 0.5 * sh else 0,
+                            1 if vt["mfe_pts"] >= 1.0 * sh else 0,
+                            1 if vt["mfe_pts"] >= 1.5 * sh else 0,
+                        ))
+                    conn.commit()
+            except Exception:
+                pass
+
+    def get_tp_recommendations(self, min_samples: int = 10) -> List[Dict[str, Any]]:
+        """
+        Read-only advisory report: evaluates live fills + virtual shadow touches
+        and recommends optimal TP multipliers per rung without changing live orders.
+        """
+        self._ensure_shadow_excursion_table()
+        recs = []
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cols = [r["name"] for r in conn.execute("PRAGMA table_info(level_cycles)").fetchall()]
+                where_model = "AND (model_type IS NULL OR model_type != 'TREND_BREAKER')" if "model_type" in cols else ""
+
+                live_rows = conn.execute(f"""
+                    SELECT rung_idx, COUNT(*) as n, AVG(mfe_ratio) as avg_mfe, AVG(mae_pts) as avg_mae,
+                           AVG(hit_0_5x_tp) as p05, AVG(hit_1_0x_tp) as p10, AVG(hit_1_5x_tp) as p15
+                    FROM level_cycles
+                    WHERE exit_type IS NOT NULL {where_model}
+                    GROUP BY rung_idx
+                """).fetchall()
+
+                virt_rows = conn.execute("""
+                    SELECT rung_idx, COUNT(*) as n, AVG(mfe_ratio) as avg_mfe, AVG(mae_pts) as avg_mae,
+                           AVG(hit_0_5x) as p05, AVG(hit_1_0x) as p10, AVG(hit_1_5x) as p15
+                    FROM shadow_rung_excursions
+                    WHERE resolved = 1
+                    GROUP BY rung_idx
+                """).fetchall()
+
+                by_rung = {}
+                for r in live_rows:
+                    by_rung[r["rung_idx"]] = {
+                        "live_n": r["n"], "virt_n": 0, "w_n": r["n"] * 2,
+                        "mfe": (r["avg_mfe"] or 1.0) * r["n"] * 2,
+                        "mae": (r["avg_mae"] or 0.0) * r["n"] * 2,
+                        "p05": (r["p05"] or 0.0) * r["n"] * 2,
+                        "p10": (r["p10"] or 0.0) * r["n"] * 2,
+                        "p15": (r["p15"] or 0.0) * r["n"] * 2,
+                    }
+                for r in virt_rows:
+                    idx = r["rung_idx"]
+                    cur = by_rung.setdefault(idx, {"live_n": 0, "virt_n": 0, "w_n": 0, "mfe": 0.0, "mae": 0.0, "p05": 0.0, "p10": 0.0, "p15": 0.0})
+                    cur["virt_n"] += r["n"]
+                    cur["w_n"] += r["n"]
+                    cur["mfe"] += (r["avg_mfe"] or 1.0) * r["n"]
+                    cur["mae"] += (r["avg_mae"] or 0.0) * r["n"]
+                    cur["p05"] += (r["p05"] or 0.0) * r["n"]
+                    cur["p10"] += (r["p10"] or 0.0) * r["n"]
+                    cur["p15"] += (r["p15"] or 0.0) * r["n"]
+
+                for idx in sorted(by_rung.keys()):
+                    st = by_rung[idx]
+                    total_obs = st["live_n"] + st["virt_n"]
+                    avg_mfe = st["mfe"] / st["w_n"]
+                    avg_mae = st["mae"] / st["w_n"]
+                    p05 = st["p05"] / st["w_n"]
+                    p10 = st["p10"] / st["w_n"]
+                    p15 = st["p15"] / st["w_n"]
+
+                    direction = 1 if idx < 8 else -1
+                    if total_obs < min_samples:
+                        rung_delta = 2
+                        tgt_rung = idx + (direction * rung_delta)
+                        rec_mult = f"+2 Rungs (->L{tgt_rung:02d})"
+                        reason = f"Gathering samples ({total_obs}/{min_samples})"
+                    elif p05 >= 0.75 and (p10 < 0.45 or avg_mfe < 0.85):
+                        rung_delta = 1
+                        tgt_rung = idx + (direction * rung_delta)
+                        rec_mult = f"+1 Rung  (->L{tgt_rung:02d})"
+                        reason = "Stalls before +2 rungs — quick 1-rung scalp"
+                    elif p15 >= 0.65 and avg_mfe >= 1.85:
+                        rung_delta = 4
+                        tgt_rung = idx + (direction * rung_delta)
+                        rec_mult = f"+4 Rungs (->L{tgt_rung:02d})"
+                        reason = "Full quartile runway extension"
+                    elif p15 >= 0.55 and avg_mfe >= 1.40:
+                        rung_delta = 3
+                        tgt_rung = idx + (direction * rung_delta)
+                        rec_mult = f"+3 Rungs (->L{tgt_rung:02d})"
+                        reason = "Strong sweep bounce — hold for +3 rungs"
+                    else:
+                        rung_delta = 2
+                        tgt_rung = idx + (direction * rung_delta)
+                        rec_mult = f"+2 Rungs (->L{tgt_rung:02d})"
+                        reason = "Standard 2-rung (1/8th) reversion is optimal"
+
+                    recs.append({
+                        "rung_idx": idx,
+                        "side": "LONG" if idx < 8 else "SHORT",
+                        "live_fills": st["live_n"],
+                        "shadow_touches": st["virt_n"],
+                        "avg_mfe_ratio": round(avg_mfe, 2),
+                        "avg_mae_pts": round(avg_mae, 2),
+                        "hit_1_0x_pct": round(p10 * 100, 1),
+                        "hit_1_5x_pct": round(p15 * 100, 1),
+                        "recommendation": rec_mult,
+                        "rationale": reason,
+                    })
+        except Exception:
+            pass
+        return recs

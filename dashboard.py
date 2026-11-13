@@ -122,7 +122,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Harmonic Nano-Grid V4 — Cockpit</title>
+<title>Harmonic Nano-Grid V5 — Cockpit</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -622,8 +622,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="form-field">
       <label>ASSET</label>
       <select id="inp-instrument" onchange="saveFormValues(); recalcSpecDetails();">
-        <option value="NNQ">NNQ ($0.20/pt &bull; $1.94 RT)</option>
-        <option value="MNQ">MNQ ($2.00/pt &bull; $1.94 RT)</option>
+        <option value="NNQ">NNQ ($0.20/pt &bull; $1.68 RT)</option>
+        <option value="MNQ">MNQ ($2.00/pt &bull; $1.86 RT)</option>
       </select>
     </div>
     <div class="form-field">
@@ -645,8 +645,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </select>
     </div>
     <div class="form-field">
-      <label>SIDE RISK BUDGET ($)</label>
-      <input type="number" id="inp-risk" step="50" value="500" oninput="saveFormValues()">
+      <label>SIDE RISK BUDGET (PER FLEET ROW)</label>
+      <input type="text" id="inp-risk-display" value="Controlled in Fleet Table" disabled style="opacity:0.65; cursor:not-allowed; color:var(--warn);">
+      <input type="hidden" id="inp-risk" value="200">
     </div>
   </div>
 
@@ -727,7 +728,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <span class="stat-label">1/8 TP Target:</span> <b id="prop-tp-pts" class="mono" style="color:var(--text); font-weight:700;">-- pts</b>
       (<span id="prop-tp-dlr" class="mono" style="color:var(--bull); font-weight:700;">$--</span>)
       &nbsp;&bull;&nbsp;
-      <span class="stat-label">RT Commission:</span> <span id="prop-fee-dlr" class="mono" style="color:var(--text);">$1.94</span>
+      <span class="stat-label">RT Commission:</span> <span id="prop-fee-dlr" class="mono" style="color:var(--text);">$1.86</span>
     </div>
     <div id="prop-drag-badge" class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent);">
       FEE DRAG: --%
@@ -751,6 +752,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <th>Side</th>
           <th style="text-align:right;">Order Price</th>
           <th style="text-align:center; color:var(--accent);">Contracts</th>
+          <th style="text-align:center; color:var(--accent);">Rotations</th>
           <th style="text-align:right;">1/8 TP</th>
           <th style="text-align:right; color:var(--bear);">Risk $</th>
           <th style="text-align:center;">Status</th>
@@ -1159,8 +1161,11 @@ function showGridPreview(key) {
     return;
   }
 
-  titleElem.textContent = `🔍 GRID MATRIX PREVIEW: ${card.title.toUpperCase()}`;
-  riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${card.side_risk.toFixed(2)}</span>`;
+  const ibAcct = (card.account_risks || []).find(a => a.id.includes("IRONBEAM")) || (card.account_risks || [])[0];
+  const acctLabel = ibAcct ? ` [${ibAcct.id} • ${ibAcct.instrument}]` : "";
+  const dispRisk = ibAcct ? ibAcct.side_risk : card.side_risk;
+  titleElem.textContent = `🔍 GRID MATRIX PREVIEW: ${card.title.toUpperCase()}${acctLabel}`;
+  riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${dispRisk.toFixed(2)}</span>`;
 
   tbody.innerHTML = '';
   const rows = card.grid_matrix || card.rungs_preview || [];
@@ -1184,6 +1189,7 @@ function showGridPreview(key) {
       <td style="color:${sideColor}; font-weight:700;">${action}</td>
       <td class="mono" style="text-align:right; font-weight:700;">${priceStr}</td>
       <td class="mono" style="text-align:center;">${qtyStr}</td>
+      <td class="mono" style="text-align:center; color:var(--accent);">${isActive ? `0/${r.cap ?? 4} rot` : "-"}</td>
       <td class="mono" style="text-align:right;">${tpStr}</td>
       <td class="mono" style="text-align:right; color:var(--bear);">${riskStr}</td>
       <td style="text-align:center;">${status}</td>
@@ -1250,7 +1256,42 @@ async function submitFleetFlatten() {
   }
 }
 
+
+async function restageIfProposalActive() {
+  const t = window._LAST_TELEMETRY;
+  if (!t || !t.staged_proposal || !t.staged_proposal.active || !t.pending_setup) return;
+  const s = t.pending_setup;
+  const payload = {
+    instrument: s.instrument || 'MNQ',
+    low: s.low,
+    high: s.high,
+    tf: s.tf || '4H',
+    risk: s.risk || 200,
+    macro_bias: s.macro || 'NEUTRAL',
+    dir_recent: s.dir_recent || 'BEARISH',
+    touches: s.touches || 0,
+    elapsed_minutes: s.elapsed_minutes || 0,
+    breakers: {
+      df: s.brk_low_front,
+      db: s.brk_low_back,
+      sf: s.brk_high_front,
+      sb: s.brk_high_back
+    }
+  };
+  try {
+    await fetch('/api/propose_range', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    await refreshTelemetry();
+  } catch (e) {}
+}
+
 async function submitAccountAction(acctId, action) {
+  if (document.activeElement && document.activeElement.tagName === "BUTTON") {
+    document.activeElement.blur();
+  }
   if (action === "FLATTEN" && !confirm(`Liquidate only account ${acctId}?`)) return;
   try {
     const res = await fetch("/api/account/action", {
@@ -1260,7 +1301,8 @@ async function submitAccountAction(acctId, action) {
     });
     const d = await res.json();
     console.log(`[Fleet] Account action ${action} on ${acctId}:`, d);
-    refreshTelemetry();
+    await refreshTelemetry();
+    await restageIfProposalActive();
   } catch(e) {
     alert("Account action error: " + e);
   }
@@ -1280,7 +1322,8 @@ async function submitAccountInstrument(acctId, newInstrument) {
     const d = await res.json();
     if (d.ok) {
       console.log(`[Fleet] Updated instrument for ${acctId} to ${inst}`);
-      refreshTelemetry();
+      await refreshTelemetry();
+      await restageIfProposalActive();
     } else {
       alert("Failed to update instrument: " + (d.error || "Unknown error"));
     }
@@ -1304,7 +1347,8 @@ async function submitAccountBudget(acctId, newBudget) {
     const d = await res.json();
     if (d.ok) {
       console.log(`[Fleet] Updated budget for ${acctId} to $${b}`);
-      refreshTelemetry();
+      await refreshTelemetry();
+      await restageIfProposalActive();
     } else {
       alert("Failed to update budget: " + (d.error || "Unknown error"));
     }
@@ -1326,8 +1370,9 @@ function updateFleetTable(accounts) {
     return;
   }
 
-  // 1. If user is actively interacting with a dropdown or input in the table, DO NOT re-render
-  if (document.activeElement && tbody.contains(document.activeElement)) {
+  // 1. Only block re-render if actively typing in an INPUT or picking from a SELECT
+  const activeEl = document.activeElement;
+  if (activeEl && tbody.contains(activeEl) && (activeEl.tagName === "INPUT" || activeEl.tagName === "SELECT")) {
     return;
   }
 
@@ -1405,7 +1450,7 @@ async function refreshTelemetry() {
 
       if (tpPtsEl) tpPtsEl.textContent = `${(prop.tp_pts || 0).toFixed(2)} pts`;
       if (tpDlrEl) tpDlrEl.textContent = `$${(prop.tp_dlr || 0).toFixed(2)}`;
-      if (feeDlrEl) feeDlrEl.textContent = `$${(prop.fee_per_rt || 1.88).toFixed(2)}`;
+      if (feeDlrEl) feeDlrEl.textContent = `$${(prop.fee_per_rt || 1.86).toFixed(2)}`;
 
       if (dragBadge) {
         const drag = prop.fee_drag_pct || 0;
@@ -1417,9 +1462,16 @@ async function refreshTelemetry() {
       const cardsContainer = document.getElementById('proposal-cards-container');
       if (cardsContainer && prop.cards) {
         cardsContainer.innerHTML = prop.cards.map(c => {
-          const budgetOk = c.side_risk <= (prop.risk_budget || 500);
+          const budgetOk = (c.all_accounts_fit !== undefined) ? c.all_accounts_fit : (c.side_risk <= (prop.risk_budget || 500));
           const riskColor = budgetOk ? 'var(--bull)' : 'var(--bear)';
           const budgetTag = budgetOk ? '<span class="badge" style="background:rgba(16,185,129,0.15); color:var(--bull); font-size:9px;">FITS BUDGET</span>' : '<span class="badge" style="background:rgba(244,63,94,0.15); color:var(--bear); font-size:9px;">EXCEEDS</span>';
+          const acctBreakdownHtml = (c.account_risks && c.account_risks.length > 0)
+            ? c.account_risks.map(ar => {
+                const aCol = ar.fits ? 'var(--bull)' : 'var(--bear)';
+                const ctTag = ar.side_cts !== undefined ? ` • ${ar.side_cts}ct` : '';
+                return `<div class="stat-row" style="font-size:10.5px;"><span class="stat-label">${ar.id} (${ar.instrument}${ctTag})</span><span class="stat-val mono" style="color:${aCol}; font-weight:700;">$${ar.side_risk.toFixed(2)} / $${ar.budget}</span></div>`;
+              }).join('')
+            : `<div class="stat-row"><span class="stat-label">Per-Side Risk</span><span class="stat-val mono" style="color:${riskColor}; font-weight:700;">$${c.side_risk.toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">/ $${prop.risk_budget}</span></span></div>`;
           return `
             <div class="proposal-card" style="border: 1px solid ${budgetOk ? 'rgba(56,189,248,0.3)' : 'rgba(255,255,255,0.08)'};">
               <div>
@@ -1428,7 +1480,7 @@ async function refreshTelemetry() {
                   ${budgetTag}
                 </div>
                 <div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
-                <div class="stat-row"><span class="stat-label">Per-Side Risk</span><span class="stat-val mono" style="color:${riskColor}; font-weight:700;">$${c.side_risk.toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">/ $${prop.risk_budget}</span></span></div>
+                ${acctBreakdownHtml}
                 <div class="stat-row"><span class="stat-label">Avg Yield / Rot</span><span class="stat-val mono" style="color:var(--bull); font-weight:700;">+$${Number(c.harvest_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">($${c.min_rot_yield}–$${c.max_rot_yield})</span></span></div>
                 <div class="stat-row"><span class="stat-label">Total Side Yield</span><span class="stat-val mono" style="color:var(--bull); font-weight:800;">+$${Number(c.side_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">(${c.side_cts || 0} ct)</span></span></div>
                 <div class="stat-row"><span class="stat-label">Two-Sided Risk</span><span class="stat-val mono" style="color:var(--text-muted);">$${c.total_risk.toFixed(2)}</span></div>
@@ -1658,7 +1710,7 @@ function openAuditorModal(selectedKey) {
   let rungsList = [];
   let inst = tel.instrument || "NNQ";
   let mult = (inst === "MNQ") ? 2.0 : 0.20;
-  let fee = 1.88;
+  const _sym = (document.getElementById("inp-instrument")?.value || "MNQ").toUpperCase(); let fee = _sym === "NNQ" ? 1.68 : (_sym === "MNQ" ? 1.86 : 1.94);
   let sideBudget = 200.0;
   let l0 = 0.0, l16 = 0.0;
   let sourceLabel = "";
@@ -1682,7 +1734,7 @@ function openAuditorModal(selectedKey) {
     sourceLabel = `PREVIEW: ${activeCard.title ? activeCard.title.toUpperCase() : activeCard.key}`;
     l0 = prop && prop.draft_low ? prop.draft_low : (tel.container ? tel.container.low : 0);
     l16 = prop && prop.draft_high ? prop.draft_high : (tel.container ? tel.container.high : 0);
-    fee = prop && prop.fee_per_rt ? prop.fee_per_rt : 1.88;
+    fee = prop && prop.fee_per_rt ? prop.fee_per_rt : 1.86;
     sideBudget = activeCard.side_risk ? activeCard.side_risk : (prop && prop.risk_budget ? prop.risk_budget : 200.0);
 
     const rawRows = activeCard.grid_matrix || activeCard.rungs_preview || activeCard.grid_dict || [];
@@ -2151,13 +2203,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/propose_range":
-            instrument = data.get("instrument", _TELEMETRY.get("instrument", "NNQ"))
+            all_accts = _TELEMETRY.get("accounts", []) or []
+            active_accts = [a for a in all_accts if str(a.get("status", "")).upper() == "HEALTHY"]
+
+            if active_accts:
+                ib_accts = [a for a in active_accts if "IRONBEAM" in str(a.get("id", "")).upper() or "DEMO" in str(a.get("venue", "")).upper()]
+                primary_acct = ib_accts[0] if ib_accts else active_accts[0]
+                instrument = primary_acct.get("instrument") or data.get("instrument", _TELEMETRY.get("instrument", "MNQ"))
+                risk = float(primary_acct.get("budget") or primary_acct.get("side_risk_budget") or data.get("risk", 200.0))
+            else:
+                instrument = data.get("instrument", _TELEMETRY.get("instrument", "MNQ"))
+                risk = float(data.get("risk", 200.0))
+
             _TELEMETRY["instrument"] = instrument
 
             low = float(data.get("low", 27615.75))
             high = float(data.get("high", 28662.00))
             tf = normalize_timeframe(data.get("tf", "4H"))
-            risk = float(data.get("risk", 500.0))
             macro = data.get("macro_bias", "NEUTRAL")
             breakers = data.get("breakers", {})
             brk_dir = data.get("dir_recent", "BEARISH")
@@ -2171,7 +2233,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             sb = float(breakers.get("sb", high))
 
             mult = MULTIPLIERS.get(instrument, 2.0 if instrument == "MNQ" else 0.2)
-            fee = COMMISSION_PER_RT.get(instrument, 0.98 if instrument == "NNQ" else 1.94)
+            fee = COMMISSION_PER_RT.get(instrument, 1.68 if instrument == "NNQ" else 1.86)
 
             geom = HarmonicGridGeometry(
                 range_low=low,
@@ -2241,6 +2303,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ("SNAPPED", "Breaker Snapped (Mitigation Priority)", dyn_custom["SNAPPED"]["discount_rungs"], dyn_custom["SNAPPED"]["premium_rungs"]),
                 ("LEAN_2_RUNG", "Lean Mitigation Core", dyn_custom["LEAN_2_RUNG"]["discount_rungs"], dyn_custom["LEAN_2_RUNG"]["premium_rungs"]),
                 ("OPTION_F_TREND_BREAKER", "Trend Breaker (Structural Targets)", opts.get("OPTION_F_TREND_BREAKER", {}).get("discount_rungs", []), opts.get("OPTION_F_TREND_BREAKER", {}).get("premium_rungs", [])),
+                ("OPTION_G_MT_CORE", "MT-to-MT Breaker Core", opts.get("OPTION_G_MT_CORE", {}).get("discount_rungs", []), opts.get("OPTION_G_MT_CORE", {}).get("premium_rungs", [])),
+                ("OPTION_H_MT_SPAN", "MT-to-MT Full Span", opts.get("OPTION_H_MT_SPAN", {}).get("discount_rungs", []), opts.get("OPTION_H_MT_SPAN", {}).get("premium_rungs", [])),
             ]
 
             calc_cards = []
@@ -2269,7 +2333,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "role": r.get("role", "MID_RANGE"),
                             "price": round(r.get("price", 0.0), 2),
                             "tp": round(r.get("tp", 0.0), 2),
-                            "contracts": r.get("contracts", 0),
+                            "contracts": r.get("contracts", 0), "cap": r.get("cap", 4),
                             "risk_dollar": round(r.get("risk_dollar", 0.0), 2)
                         })
 
@@ -2293,6 +2357,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 min_rot = round(min(active_cts) * net_1ct, 2) if active_cts else 0.0
                 max_rot = round(max(active_cts) * net_1ct, 2) if active_cts else 0.0
 
+                account_risks = []
+                all_accounts_fit = True
+                fleet_total_side_risk = 0.0
+                if active_accts:
+                    for acct in active_accts:
+                        a_id = acct.get("id", "UNKNOWN")
+                        a_inst = acct.get("instrument", instrument)
+                        a_bud = float(acct.get("budget") or acct.get("side_risk_budget") or risk)
+                        a_mult = MULTIPLIERS.get(a_inst, 2.0 if a_inst == "MNQ" else 0.2)
+                        a_fee = COMMISSION_PER_RT.get(a_inst, 1.68 if a_inst == "NNQ" else 1.86)
+                        a_geom = HarmonicGridGeometry(
+                            range_low=low, range_high=high, resolution=16,
+                            multiplier=a_mult, fee_per_rt=a_fee,
+                            r_side_budget=a_bud, instrument=a_inst
+                        )
+                        a_g = a_geom.generate_grid(
+                            active_discount_rungs=disc,
+                            active_premium_rungs=prem,
+                            target_mapping=opts.get(opt_key, {}).get("target_mapping"),
+                            brk_low_back=db, brk_low_front=df,
+                            brk_high_front=sf, brk_high_back=sb
+                        )
+                        a_l_rungs = [r for r in a_g.values() if r.get("side") == "LONG" and r.get("contracts", 0) > 0]
+                        a_s_rungs = [r for r in a_g.values() if r.get("side") == "SHORT" and r.get("contracts", 0) > 0]
+                        a_l_risk = sum(r.get("risk_dollar", 0.0) for r in a_l_rungs)
+                        a_s_risk = sum(r.get("risk_dollar", 0.0) for r in a_s_rungs)
+                        a_side_cts = max(sum(r.get("contracts", 0) for r in a_l_rungs), sum(r.get("contracts", 0) for r in a_s_rungs))
+                        a_max_side = round(max(a_l_risk, a_s_risk), 2)
+                        a_fits = a_max_side <= a_bud
+                        if not a_fits:
+                            all_accounts_fit = False
+                        fleet_total_side_risk += a_max_side
+                        account_risks.append({
+                            "id": a_id,
+                            "instrument": a_inst,
+                            "budget": round(a_bud, 2),
+                            "side_risk": a_max_side,
+                            "side_cts": a_side_cts,
+                            "fits": a_fits
+                        })
+                else:
+                    all_accounts_fit = (round(max_side_risk, 2) <= risk)
+                    fleet_total_side_risk = round(max_side_risk, 2)
+
                 card_data = {
                     "key": opt_key,
                     "title": opt_title,
@@ -2306,7 +2414,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "side_yield": total_side_yield,
                     "disc": disc,
                     "prem": prem,
-                    "grid_matrix": grid_matrix
+                    "grid_matrix": grid_matrix,
+                    "account_risks": account_risks,
+                    "all_accounts_fit": all_accounts_fit,
+                    "fleet_side_risk": round(fleet_total_side_risk, 2)
                 }
                 calc_cards.append(card_data)
                 _PENDING_CARDS[opt_key] = card_data

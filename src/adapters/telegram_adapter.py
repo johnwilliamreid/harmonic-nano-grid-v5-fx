@@ -252,7 +252,7 @@ class TelegramBridge:
 
         geom_nnq = HarmonicGridGeometry(
             range_low=low, range_high=high, tick_size=0.50,
-            multiplier=0.20, fee_per_rt=0.98, r_side_budget=risk, instrument="NNQ"
+            multiplier=0.20, fee_per_rt=1.68, r_side_budget=risk, instrument="NNQ"
         )
         pkg_nnq = geom_nnq.generate_proposal_package(
             brk_low_front=b_l_front, brk_low_back=b_l_back,
@@ -261,7 +261,7 @@ class TelegramBridge:
 
         geom_mnq = HarmonicGridGeometry(
             range_low=low, range_high=high, tick_size=0.25,
-            multiplier=2.0, fee_per_rt=1.94, r_side_budget=risk, instrument="MNQ"
+            multiplier=2.0, fee_per_rt=1.86, r_side_budget=risk, instrument="MNQ"
         )
         pkg_mnq = geom_mnq.generate_proposal_package(
             brk_low_front=b_l_front, brk_low_back=b_l_back,

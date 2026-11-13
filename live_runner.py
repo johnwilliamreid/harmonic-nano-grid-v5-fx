@@ -206,7 +206,7 @@ def run_live_session(args):
         except Exception as e:
             print(f"[Runner] ⚠️ Fleet Dispatcher init warning: {e}")
     mult = MULTIPLIERS.get(args.instrument, 2.0)
-    fee = COMMISSION_PER_RT.get(args.instrument, 1.94)
+    fee = COMMISSION_PER_RT.get(args.instrument, 1.68 if args.instrument == "NNQ" else 1.86)
 
     has_init_range = (args.low is not None and args.high is not None and args.high > args.low)
     init_low = args.low if has_init_range else 27000.00
@@ -406,7 +406,7 @@ def run_live_session(args):
         nonlocal active_profile, grid_dict, grid_by_idx
 
         current_name = state.get("active_profile_name")
-        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D", "OPTION_E", "OPTION_F_TREND_BREAKER"):
+        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D", "OPTION_E", "OPTION_F_TREND_BREAKER", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN"):
             if current_name and (opt_key in current_name or (opt_key == "SNAPPED" and "Mitigation Priority" in current_name)):
                 print(f"[RE-ARM GUARD] Grid already armed with {current_name}. Skipping redundant order cycling.")
                 return True
@@ -527,7 +527,7 @@ def run_live_session(args):
                         broker.set_instrument(args.instrument)
 
                 mult = MULTIPLIERS.get(args.instrument, 2.0 if args.instrument == "MNQ" else 0.2)
-                fee = COMMISSION_PER_RT.get(args.instrument, 1.94)
+                fee = COMMISSION_PER_RT.get(args.instrument, 1.68 if args.instrument == "NNQ" else 1.86)
 
                 if "touches" in setup: args.brk_touches = int(setup["touches"])
                 if "dir_recent" in setup: args.brk_dir = str(setup["dir_recent"])
@@ -1283,6 +1283,7 @@ def run_live_session(args):
 
             if live_px > 0:
                 try:
+                    data_engine.track_virtual_rung_touches(live_px, now, geom, args.instrument)
                     data_engine.on_market_tick(live_px, now)
                 except Exception as e:
                     pass

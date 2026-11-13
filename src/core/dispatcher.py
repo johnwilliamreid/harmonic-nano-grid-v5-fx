@@ -1,3 +1,8 @@
+try:
+    from src.adapters.hyperliquid_adapter import HyperliquidAdapter
+except Exception:
+    HyperliquidAdapter = None
+from src.config import HL_PERP_SPECS
 import time
 import json
 import os
@@ -136,7 +141,7 @@ class MultiAccountDispatcher:
         """Dynamic integer sizing using the account risk budget."""
         side_budget = float(cfg.get("side_risk_budget", 500.0))
         mult = float(MULTIPLIERS.get(inst, 2.0))
-        fee = float(COMMISSION_PER_RT.get(inst, 1.94))
+        fee = float(COMMISSION_PER_RT.get(inst, 1.68 if inst == "NNQ" else 1.86))
         weight = intent.rung_weight or 0.25
 
         if intent.sl_price and intent.price:
@@ -254,4 +259,24 @@ class MultiAccountDispatcher:
             print(f"[Dispatcher] ⚠️ Failed to persist instrument to {cfg_file}: {e}")
 
         return True
+
+    def _size_for_account(self, raw_qty: float, instrument: str) -> float:
+        spec = HL_PERP_SPECS.get(instrument)
+        if spec:
+            step = spec["lot_step"]
+            min_q = spec["min_qty"]
+            decimals = max(0, len(str(step).split(".")[1]) if "." in str(step) else 0)
+            sized = round(round(raw_qty / step) * step, decimals)
+            return max(min_q, sized)
+        return float(max(1, round(raw_qty)))
+
+    def drain_fleet_fills(self) -> List[Dict[str, Any]]:
+        all_fills = []
+        for acct_id, acct in self.accounts.items():
+            adapter = acct.get("adapter")
+            if adapter and hasattr(adapter, "drain_fills"):
+                for fl in adapter.drain_fills():
+                    fl["account_id"] = acct_id
+                    all_fills.append(fl)
+        return all_fills
 

@@ -53,7 +53,7 @@ class HarmonicGridGeometry:
         resolution: int = 16,
         tick_size: Optional[float] = None,
         multiplier: float = 0.20,
-        fee_per_rt: float = 0.98,
+        fee_per_rt: float = 1.86,
         r_budget: Optional[float] = None,
         r_side_budget: float = 200.0,
         instrument: str = "NNQ"
@@ -757,6 +757,36 @@ class HarmonicGridGeometry:
             options["OPTION_F_TREND_BREAKER"] = opt_f
         except Exception as _e:
             pass
+        # Option G & Option H: Midpoint-to-Midpoint (MT) Breaker Profiles
+        try:
+            _f_low  = float(brk_low_front)  if brk_low_front  is not None else (self.range_low + 0.3125 * self.delta_p)
+            _b_low  = float(brk_low_back)   if brk_low_back   is not None else (self.range_low + 0.1250 * self.delta_p)
+            _f_high = float(brk_high_front) if brk_high_front is not None else (self.range_high - 0.3125 * self.delta_p)
+            _b_high = float(brk_high_back)  if brk_high_back  is not None else (self.range_high - 0.1250 * self.delta_p)
+
+            _d_front = max(1, min(7, int(round((_f_low - self.range_low) / self.s_step))))
+            _d_back  = max(1, min(_d_front, int(round((_b_low - self.range_low) / self.s_step))))
+            _d_mt    = max(1, min(_d_front, int(round((_d_front + _d_back) / 2.0))))
+
+            _s_front = max(9, min(15, int(round((_f_high - self.range_low) / self.s_step))))
+            _s_back  = max(_s_front, min(15, int(round((_b_high - self.range_low) / self.s_step))))
+            _s_mt    = max(_s_front, min(15, int(round((_s_front + _s_back) / 2.0))))
+
+            options["OPTION_G_MT_CORE"] = {
+                "name": "MT-to-MT Breaker Core (Front <-> MT)",
+                "desc": "All contiguous rungs inside each breaker Front-to-MT zone; center corridor disarmed",
+                "discount_rungs": list(range(_d_mt, _d_front + 1)),
+                "premium_rungs": list(range(_s_front, _s_mt + 1)),
+            }
+            options["OPTION_H_MT_SPAN"] = {
+                "name": "MT-to-MT Full Span (All Inner Rungs)",
+                "desc": "Every contiguous rung from Demand MT through L7/L9 to Supply MT (L8 excluded)",
+                "discount_rungs": list(range(_d_mt, 8)),
+                "premium_rungs": list(range(9, _s_mt + 1)),
+            }
+        except Exception as _mt_err:
+            print(f"[WARN] MT profile generation skipped: {_mt_err}")
+
         return {
             "instrument": self.instrument,
             "tick_size": self.tick_size,

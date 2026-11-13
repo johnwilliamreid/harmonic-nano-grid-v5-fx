@@ -73,6 +73,19 @@ def render_report():
     print("=" * 86)
     conn.close()
 
+
+    # 4. Read-Only TP Multiplier Recommendations (Advisory Only)
+    recs = de.get_tp_recommendations(min_samples=10)
+    print("\n▶ ADVISORY: EMPIRICAL TP HARVEST RECOMMENDATIONS (READ-ONLY)")
+    print("-" * 86)
+    print(f"{'Rung':<5} | {'Side':<5} | {'Obs (L/V)':<10} | {'Avg MFE':<8} | {'Hit 1.0x':<8} | {'Hit 1.5x':<8} | {'Suggestion':<16} | {'Rationale'}")
+    print("-" * 86)
+    if not recs:
+        print("  (Collecting live fills & shadow rung touches — no suggestions yet)")
+    for rec in recs:
+        obs = f"{rec['live_fills']}/{rec['shadow_touches']}"
+        print(f"L{rec['rung_idx']:<4} | {rec['side']:<5} | {obs:<10} | {rec['avg_mfe_ratio']:.2f}x{'':<3} | {rec['hit_1_0x_pct']:>5.1f}%{'':<2} | {rec['hit_1_5x_pct']:>5.1f}%{'':<2} | {rec['recommendation']:<16} | {rec['rationale']}")
+
 if __name__ == "__main__":
     watch = "--watch" in sys.argv
     while True:
