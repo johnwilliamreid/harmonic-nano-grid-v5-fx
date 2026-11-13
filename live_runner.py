@@ -591,6 +591,17 @@ def run_live_session(args):
                 brk_high_back=b_hb
             )
 
+            rot_overrides = data.get("rotation_overrides") or {}
+            if rot_overrides:
+                for k_idx, v_cap in rot_overrides.items():
+                    i_idx = int(k_idx)
+                    if i_idx in grid_by_idx:
+                        new_cap = max(0, int(v_cap))
+                        grid_by_idx[i_idx]["cap"] = new_cap
+                        if grid_by_idx[i_idx]["status"] not in ("FILLED_IN_POSITION", "STOPPED_OUT"):
+                            grid_by_idx[i_idx]["status"] = "IDLE" if new_cap > 0 else "EXIT_ONLY"
+                print(f"🎛️ [ROTATION OVERRIDE] Applied custom rung caps: {rot_overrides}")
+
             try:
                 session_tag = f"{args.instrument}_{args.tf}_{int(time.time())}"
                 data_store.register_grid_levels(grid_by_idx, session_id=session_tag)

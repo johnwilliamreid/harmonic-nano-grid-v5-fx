@@ -1134,7 +1134,7 @@ async function submitProposalChoice(choice) {
     const res = await fetch('/api/arm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: choice, posture: selectedPosture })
+      body: JSON.stringify({ mode: choice, posture: selectedPosture, rotation_overrides: (window._PREVIEW_CAP_OVERRIDES && window._PREVIEW_CAP_OVERRIDES[choice]) || {} })
     });
     const d = await res.json();
     if (d.ok) {
@@ -1160,6 +1160,17 @@ async function submitFlatten() {
   }
 }
 
+window._PREVIEW_CAP_OVERRIDES = window._PREVIEW_CAP_OVERRIDES || {};
+function updatePreviewCap(key, idx, val) {
+  const cap = Math.max(0, Math.min(50, parseInt(val, 10) || 0));
+  window._PREVIEW_CAP_OVERRIDES[key] = window._PREVIEW_CAP_OVERRIDES[key] || {};
+  window._PREVIEW_CAP_OVERRIDES[key][idx] = cap;
+  const card = (stagedCardsCache || []).find(x => x.key === key);
+  if (card && card.grid_matrix) {
+    const row = card.grid_matrix.find(x => (x.index ?? x.idx) === idx);
+    if (row) row.cap = cap;
+  }
+}
 function showGridPreview(key) {
   window._CURRENT_PREVIEW_KEY = key;
   const previewBox = document.getElementById('preview-matrix-container');
@@ -1204,7 +1215,7 @@ function showGridPreview(key) {
       <td style="color:${sideColor}; font-weight:700;">${action}</td>
       <td class="mono" style="text-align:right; font-weight:700;">${priceStr}</td>
       <td class="mono" style="text-align:center;">${qtyStr}</td>
-      <td class="mono" style="text-align:center; color:var(--accent);">${isActive ? `0/${r.cap ?? 4} rot` : "-"}</td>
+      <td class="mono" style="text-align:center; color:var(--accent);">${isActive ? `0 / <input type="number" min="0" max="50" step="1" value="${(window._PREVIEW_CAP_OVERRIDES[key]?.[idx]) ?? r.cap ?? 4}" onchange="updatePreviewCap('${key}', ${idx}, this.value)" style="width:42px; background:rgba(0,0,0,0.65); border:1px solid var(--accent); border-radius:4px; color:var(--accent); text-align:center; font-family:'JetBrains Mono',monospace; font-weight:800; font-size:11px; padding:1px 2px;"> rot` : "-"}</td>
       <td class="mono" style="text-align:right;">${tpStr}</td>
       <td class="mono" style="text-align:right; color:var(--bear);">${riskStr}</td>
       <td style="text-align:center;">${status}</td>
@@ -2152,6 +2163,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self.path == "/api/arm":
             mode = data.get("mode", "SNAPPED")
             posture = data.get("posture", "DIRECTIVE")
+            rot_overrides = data.get("rotation_overrides") or {}
             setup = _TELEMETRY.get("pending_setup", {})
 
             if setup and mode != "CANCEL" and _PENDING_GEOM is not None:
@@ -2190,10 +2202,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "reward_dollar": round(r.get("reward_dollar", 0.0), 2),
                         "rr_ratio": round(r.get("rr_ratio", 2.2), 2),
                         "rotations": r.get("rotations", 0),
-                        "cap": r.get("cap", 4),
+                        "cap": int(rot_overrides.get(str(idx), r.get("cap", 4))),
                         "booked_pnl": 0.0,
                         "floating_pnl": 0.0,
-                        "status": "ARMED_RESTING" if contracts > 0 else "STANDBY"
+                        "status": "ARMED_RESTING" if (contracts > 0 and int(rot_overrides.get(str(idx), r.get("cap", 4))) > 0) else "STANDBY"
                     })
 
                 _TELEMETRY["instrument"] = setup.get("instrument", "NNQ")
@@ -2215,7 +2227,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             try:
                 if _ON_ARM_CALLBACK:
-                    _ON_ARM_CALLBACK({"mode": mode, "posture": posture})
+                    _ON_ARM_CALLBACK({"mode": mode, "posture": posture, "rotation_overrides": rot_overrides})
             except Exception as e:
                 print(f"[Dashboard] ⚠️ Error in _ON_ARM_CALLBACK: {e}")
 
