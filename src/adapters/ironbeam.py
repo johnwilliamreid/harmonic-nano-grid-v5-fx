@@ -724,6 +724,7 @@ class IronbeamAdapter(BaseBrokerAdapter):
                             sym = q.get("s") or q.get("sym") or q.get("exchSym")
                             if sym and sym != self.data_symbol:
                                 continue
+                            if (q.get("s") or self.data_symbol) != self.data_symbol: continue
                             price = q.get("last") or q.get("l") or q.get("price")
                             if price:
                                 break
@@ -733,6 +734,7 @@ class IronbeamAdapter(BaseBrokerAdapter):
                             sym = t.get("s") or t.get("sym") or t.get("exchSym")
                             if sym and sym != self.data_symbol:
                                 continue
+                            if (t.get("s") or self.data_symbol) != self.data_symbol: continue
                             price = t.get("price") or t.get("p")
                             if price:
                                 break
