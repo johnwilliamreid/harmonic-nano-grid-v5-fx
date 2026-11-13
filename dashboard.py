@@ -847,7 +847,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin:14px 0;"></div>
+  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:14px 0;"></div>
 
   <div id="preview-matrix-container">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -2080,6 +2080,39 @@ function openAuditorModal(selectedKey) {
 
   overlay.style.display = "flex";
 }
+
+
+// Auto-populate Demand Back from Low Boundary & Supply Back from High Boundary (unless manually overridden)
+(function initBoundaryBreakerSync() {
+  const lowEl = document.getElementById('inp-low');
+  const highEl = document.getElementById('inp-high');
+  const dbEl = document.getElementById('inp-db');
+  const sbEl = document.getElementById('inp-sb');
+  if (!lowEl || !highEl || !dbEl || !sbEl) return;
+
+  window._DB_MANUAL = Boolean(dbEl.value && dbEl.value !== lowEl.value);
+  window._SB_MANUAL = Boolean(sbEl.value && sbEl.value !== highEl.value);
+
+  dbEl.addEventListener('input', () => {
+    window._DB_MANUAL = dbEl.value.trim() !== '';
+  });
+  sbEl.addEventListener('input', () => {
+    window._SB_MANUAL = sbEl.value.trim() !== '';
+  });
+
+  lowEl.addEventListener('input', () => {
+    if (!window._DB_MANUAL) {
+      dbEl.value = lowEl.value;
+      if (typeof saveFormValues === 'function') saveFormValues();
+    }
+  });
+  highEl.addEventListener('input', () => {
+    if (!window._SB_MANUAL) {
+      sbEl.value = highEl.value;
+      if (typeof saveFormValues === 'function') saveFormValues();
+    }
+  });
+})();
 
 </script>
 
