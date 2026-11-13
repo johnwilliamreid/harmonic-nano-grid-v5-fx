@@ -622,8 +622,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="form-field">
       <label>ASSET</label>
       <select id="inp-instrument" onchange="saveFormValues(); recalcSpecDetails();">
-        <option value="NNQ">NNQ ($0.20/pt &bull; $1.68 RT)</option>
-        <option value="MNQ">MNQ ($2.00/pt &bull; $1.86 RT)</option>
+        <optgroup label="CME Micros &amp; Nanos">
+          <option value="MNQ">MNQ ($2.00/pt &bull; $1.86 RT)</option>
+          <option value="NNQ">NNQ ($0.20/pt &bull; $1.68 RT)</option>
+          <option value="MES">MES ($5.00/pt &bull; $1.94 RT)</option>
+          <option value="M2K">M2K ($5.00/pt &bull; $1.94 RT)</option>
+          <option value="MYM">MYM ($0.50/pt &bull; $1.94 RT)</option>
+          <option value="MGC">MGC ($10.00/pt &bull; $1.94 RT)</option>
+          <option value="MCL">MCL ($100.00/pt &bull; $1.94 RT)</option>
+        </optgroup>
+        <optgroup label="CME Standard Contracts">
+          <option value="NQ">NQ ($20.00/pt &bull; $4.54 RT)</option>
+          <option value="ES">ES ($50.00/pt &bull; $4.54 RT)</option>
+          <option value="RTY">RTY ($50.00/pt &bull; $4.54 RT)</option>
+          <option value="YM">YM ($5.00/pt &bull; $4.54 RT)</option>
+          <option value="GC">GC ($100.00/pt &bull; $4.54 RT)</option>
+          <option value="CL">CL ($1,000.00/pt &bull; $4.54 RT)</option>
+        </optgroup>
       </select>
     </div>
     <div class="form-field">
@@ -1400,10 +1415,19 @@ function updateFleetTable(accounts) {
             style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.18); border-radius:4px; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; padding:2px 4px; outline:none; cursor:pointer;"
             title="Switch execution asset for this account"
             onchange="submitAccountInstrument('${a.id}', this.value)">
-            <option value="MNQ" ${ (a.instrument || 'MNQ') === 'MNQ' ? 'selected' : '' }>MNQ ($2.00/pt)</option>
-            <option value="NNQ" ${ (a.instrument || 'MNQ') === 'NNQ' ? 'selected' : '' }>NNQ ($0.20/pt)</option>
-            <option value="NQ"  ${ (a.instrument || 'MNQ') === 'NQ'  ? 'selected' : '' }>NQ ($20.00/pt)</option>
-            <option value="MES" ${ (a.instrument || 'MNQ') === 'MES' ? 'selected' : '' }>MES ($5.00/pt)</option>
+            <option value="MNQ" ${ (a.instrument || "MNQ") === "MNQ" ? "selected" : "" }>MNQ ($2.00/pt)</option>
+            <option value="NNQ" ${ (a.instrument || "MNQ") === "NNQ" ? "selected" : "" }>NNQ ($0.20/pt)</option>
+            <option value="MES" ${ (a.instrument || "MNQ") === "MES" ? "selected" : "" }>MES ($5.00/pt)</option>
+            <option value="M2K" ${ (a.instrument || "MNQ") === "M2K" ? "selected" : "" }>M2K ($5.00/pt)</option>
+            <option value="MYM" ${ (a.instrument || "MNQ") === "MYM" ? "selected" : "" }>MYM ($0.50/pt)</option>
+            <option value="MGC" ${ (a.instrument || "MNQ") === "MGC" ? "selected" : "" }>MGC ($10.00/pt)</option>
+            <option value="MCL" ${ (a.instrument || "MNQ") === "MCL" ? "selected" : "" }>MCL ($100.00/pt)</option>
+            <option value="NQ" ${ (a.instrument || "MNQ") === "NQ" ? "selected" : "" }>NQ ($20.00/pt)</option>
+            <option value="ES" ${ (a.instrument || "MNQ") === "ES" ? "selected" : "" }>ES ($50.00/pt)</option>
+            <option value="RTY" ${ (a.instrument || "MNQ") === "RTY" ? "selected" : "" }>RTY ($50.00/pt)</option>
+            <option value="YM" ${ (a.instrument || "MNQ") === "YM" ? "selected" : "" }>YM ($5.00/pt)</option>
+            <option value="GC" ${ (a.instrument || "MNQ") === "GC" ? "selected" : "" }>GC ($100.00/pt)</option>
+            <option value="CL" ${ (a.instrument || "MNQ") === "CL" ? "selected" : "" }>CL ($1000.00/pt)</option>
           </select>
         </td>
         <td class="mono" style="padding:6px 8px; text-align:right;">

@@ -32,12 +32,16 @@ class IronbeamAdapter(BaseBrokerAdapter):
     LIVE_WS = "wss://live.ironbeamapi.com/v2/stream"
 
     EXCH_SYMBOLS = {
-        "MNQ": "XCME:MNQ.Z26",
-        "NNQ": "XCME:NNQ.Z26",
+        "MNQ": "XCME:MNQ.Z26", "NNQ": "XCME:NNQ.Z26", "NQ": "XCME:NQ.Z26",
+        "MES": "XCME:MES.Z26", "ES": "XCME:ES.Z26", "M2K": "XCME:M2K.Z26",
+        "RTY": "XCME:RTY.Z26", "MYM": "XCBT:MYM.Z26", "YM": "XCBT:YM.Z26",
+        "MGC": "XCEC:MGC.Z26", "GC": "XCEC:GC.Z26", "MCL": "XNYM:MCL.Z26", "CL": "XNYM:CL.Z26",
     }
     DATA_SYMBOLS = {
-        "MNQ": "XCME:MNQ.Z26",
-        "NNQ": "XCME:MNQ.Z26",
+        "MNQ": "XCME:MNQ.Z26", "NNQ": "XCME:MNQ.Z26", "NQ": "XCME:NQ.Z26",
+        "MES": "XCME:MES.Z26", "ES": "XCME:ES.Z26", "M2K": "XCME:M2K.Z26",
+        "RTY": "XCME:RTY.Z26", "MYM": "XCBT:MYM.Z26", "YM": "XCBT:YM.Z26",
+        "MGC": "XCEC:MGC.Z26", "GC": "XCEC:GC.Z26", "MCL": "XNYM:MCL.Z26", "CL": "XNYM:CL.Z26",
     }
 
     _DEAD_KEYWORDS = (
