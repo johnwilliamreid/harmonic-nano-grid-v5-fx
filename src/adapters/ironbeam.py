@@ -115,8 +115,18 @@ class IronbeamAdapter(BaseBrokerAdapter):
         return None
 
     def set_instrument(self, instrument):
+        old_sym = getattr(self, "data_symbol", None)
         self.current_instrument = instrument
         self.data_symbol = self.DATA_SYMBOLS.get(instrument, "XCME:MNQ.Z26")
+        if old_sym and old_sym != self.data_symbol:
+            self.last_price = None
+            self.last_price_time = 0
+            if getattr(self, "running", False) and getattr(self, "stream_id", None) and self.live_token:
+                for ch in ["quotes", "trades"]:
+                    try:
+                        requests.get(f"{self.LIVE_BASE}/market/{ch}/unsubscribe/{self.stream_id}?symbols={old_sym}", headers={"Authorization": f"Bearer {self.live_token}"}, timeout=3)
+                    except Exception:
+                        pass
         print("[ironbeam] 🎯 Instrument switched to: %s (exchSym: %s)" % (
             instrument, self.data_symbol))
         if getattr(self, "running", False) and getattr(self, "stream_id", None) and self.live_token:
@@ -711,12 +721,18 @@ class IronbeamAdapter(BaseBrokerAdapter):
                 if "q" in d:
                     for q in (d["q"] if isinstance(d["q"], list) else [d["q"]]):
                         if isinstance(q, dict):
+                            sym = q.get("s") or q.get("sym") or q.get("exchSym")
+                            if sym and sym != self.data_symbol:
+                                continue
                             price = q.get("last") or q.get("l") or q.get("price")
                             if price:
                                 break
                 elif "tr" in d:
                     for t in (d["tr"] if isinstance(d["tr"], list) else [d["tr"]]):
                         if isinstance(t, dict):
+                            sym = t.get("s") or t.get("sym") or t.get("exchSym")
+                            if sym and sym != self.data_symbol:
+                                continue
                             price = t.get("price") or t.get("p")
                             if price:
                                 break
