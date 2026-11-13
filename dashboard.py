@@ -1,3 +1,4 @@
+import math
 import json
 import os
 import threading
@@ -18,6 +19,79 @@ _ON_DEPLOY_CALLBACK: Optional[Callable[[], None]] = None
 _ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
 _ON_PROPOSE_CALLBACK: Optional[Callable[[Dict[str, Any]], None]] = None
 _ON_FLATTEN_CALLBACK: Optional[Callable[[], None]] = None
+
+
+def compute_prelaunch_advisory(range_low, range_high, df, db, sf, sb, current_price=0.0, multiplier=2.0, fee_per_rt=1.86, tick_size=0.25, d_mit="FRESH", s_mit="FRESH"):
+    span = range_high - range_low
+    if span <= 0:
+        return {"score": 0.0, "tier": "INVALID", "s_brk_fit": 0.0, "s_symmetry": 0.0, "s_mt": 0.0, "m_gate": 0.0, "note": "Invalid span — all profiles unlocked below."}
+
+    # 1. Breaker Width Fit Score (30%): Distance to 0.30 * span sweet spot + corridor clearance
+    w_d, w_s, r_corridor = abs(df - db) / span, abs(sb - sf) / span, (sf - df) / span
+    sw_d = 100.0 * math.exp(-((w_d - 0.30) ** 2) / (2.0 * (0.12 ** 2)))
+    sw_s = 100.0 * math.exp(-((w_s - 0.30) ** 2) / (2.0 * (0.12 ** 2)))
+    overlap_pen = 0.0 if r_corridor >= 0.30 else (25.0 * (1.0 - r_corridor / 0.30) if r_corridor >= 0.0 else 35.0)
+    s_brk_fit = max(0.0, 0.5 * (sw_d + sw_s) - overlap_pen)
+
+    # 2. Symmetry Score (30%): Width parity + equilibrium centering
+    max_w = max(w_d, w_s)
+    s_sym_width = (1.0 - abs(w_d - w_s) / max_w) if max_w > 0 else 1.0
+    s_sym_pos = max(0.0, 1.0 - abs(0.5 * (df + sf) - 0.5 * (range_low + range_high)) / (0.5 * span))
+    s_symmetry = 100.0 * (0.50 * s_sym_width + 0.50 * s_sym_pos)
+
+    # 3. Pre-Launch MT Integrity Score (40%) & Exhaustion Gate
+    mit_map = {"FRESH": 100.0, "FRONT_TESTED": 75.0, "MT_MITIGATED": 35.0, "BREACHED": 0.0}
+    s_mt_d = mit_map.get(str(d_mit or "FRESH").upper(), 100.0)
+    s_mt_s = mit_map.get(str(s_mit or "FRESH").upper(), 100.0)
+    s_mt_total = 0.5 * (s_mt_d + s_mt_s)
+
+    if s_mt_d == 0.0 and s_mt_s == 0.0:
+        m_gate = 0.0
+    elif s_mt_d <= 35.0 and s_mt_s <= 35.0:
+        m_gate = 0.75
+    elif s_mt_d == 0.0 or s_mt_s == 0.0:
+        m_gate = 0.90
+    else:
+        m_gate = 1.0
+
+    raw_score = (0.30 * s_brk_fit) + (0.30 * s_symmetry) + (0.40 * s_mt_total)
+    score = round(raw_score * m_gate, 1)
+
+    tier = "HIGH CONFIDENCE" if score >= 80.0 else ("MODERATE" if score >= 60.0 else ("LOW / DEGRADED" if score >= 40.0 else "WEAK / BREACHED"))
+
+    notes = []
+    if s_mt_d == 0.0 and s_mt_s == 0.0:
+        notes.append("Both breaker MTs breached")
+    elif s_mt_d == 0.0:
+        notes.append("Demand MT breached (Supply intact)")
+    elif s_mt_s == 0.0:
+        notes.append("Supply MT breached (Demand intact)")
+    elif s_mt_d <= 35.0 and s_mt_s <= 35.0:
+        notes.append("Both breaker MTs already mitigated (late-stage range)")
+    elif s_mt_d <= 35.0:
+        notes.append("Demand MT mitigated (Supply fresher)")
+    elif s_mt_s <= 35.0:
+        notes.append("Supply MT mitigated (Demand fresher)")
+
+    if r_corridor < 0.0:
+        notes.append("Overlapping breakers across equilibrium")
+    elif s_brk_fit < 60.0:
+        notes.append("Off-target breaker width ratio")
+    if s_symmetry < 65.0:
+        notes.append("Asymmetric breaker geometry")
+    if not notes:
+        notes.append("Balanced two-sided geometry with intact MTs")
+
+    return {
+        "score": score,
+        "tier": tier,
+        "s_brk_fit": round(s_brk_fit, 1),
+        "s_symmetry": round(s_symmetry, 1),
+        "s_mt": round(s_mt_total, 1),
+        "m_gate": m_gate,
+        "note": " • ".join(notes) + " — Advisory only; all profiles unlocked below.",
+    }
+
 
 def normalize_timeframe(tf_str: str) -> str:
     s = str(tf_str).strip().upper()
@@ -703,14 +777,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <option value="BULLISH">🟢 Recent Bullish Demand</option>
       </select>
     </div>
-    <div class="form-field">
-      <label>EXISTING TOUCHES</label>
-      <select id="inp-touches" onchange="saveFormValues()">
-        <option value="0">0 Touches (Fresh Zone)</option>
-        <option value="1">1 Touch (Tested)</option>
-        <option value="2" selected>2 Touches (Mitigated)</option>
-        <option value="3">3+ Touches (Exhausted)</option>
-      </select>
+    <div class="form-field" style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+      <div>
+        <label style="color:var(--bull); font-weight:800;">🟢 DEMAND MITIGATION</label>
+        <select id="nr-demand-mit" onchange="saveFormValues()">
+          <option value="FRESH" selected>Fresh (Unmitigated)</option>
+          <option value="FRONT_TESTED">Front Tested (MT Intact)</option>
+          <option value="MT_MITIGATED">Mitigated (50% MT Tapped)</option>
+          <option value="BREACHED">Breached (Closed Past MT)</option>
+        </select>
+      </div>
+      <div>
+        <label style="color:var(--bear); font-weight:800;">🔴 SUPPLY MITIGATION</label>
+        <select id="nr-supply-mit" onchange="saveFormValues()">
+          <option value="FRESH" selected>Fresh (Unmitigated)</option>
+          <option value="FRONT_TESTED">Front Tested (MT Intact)</option>
+          <option value="MT_MITIGATED">Mitigated (50% MT Tapped)</option>
+          <option value="BREACHED">Breached (Closed Past MT)</option>
+        </select>
+      </div>
     </div>
     <div class="form-field" style="border: 1px solid var(--warn); border-radius: 6px; padding: 6px 8px; background: rgba(245, 158, 11, 0.06);">
       <label style="color:var(--warn); font-weight:800;">⏰ ELAPSED MINUTES SINCE FORMED</label>
@@ -726,6 +811,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <!-- PROPOSAL DRAWER -->
 <div id="proposal-drawer" class="glass">
+  <div id="proposal-advisory-banner" style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin:10px 0 12px 0; padding:10px 14px; background:rgba(15, 23, 42, 0.75); border:1px solid var(--border-bright); border-radius:8px;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <span id="adv-score-badge" class="badge" style="background:rgba(56,189,248,0.18); color:var(--accent); font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:800; padding:4px 10px;">CONFIDENCE: --/100</span>
+      <span id="adv-note-text" style="font-size:11.5px; color:var(--text-muted);">Advisory only — all grid profiles unlocked below.</span>
+    </div>
+    <div class="mono" style="display:flex; flex-wrap:wrap; gap:12px; font-size:11px; color:var(--text);">
+      <span>BRK FIT: <b id="adv-s-brk" style="color:var(--accent);">--%</b></span>
+      <span>SYMMETRY: <b id="adv-s-sym" style="color:var(--accent);">--%</b></span>
+      <span>MT INTACT: <b id="adv-s-mt" style="color:var(--accent);">--%</b></span>
+    </div>
+  </div>
+
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
     <div style="display:flex; align-items:center; gap:8px;">
       <span style="color: var(--warn); font-size:13px; font-weight:800;">⚡ CONTAINER RE-ARM PROPOSAL READY FOR REVIEW</span>
@@ -1078,7 +1175,7 @@ async function submitNewRange() {
   const risk = parseFloat(document.getElementById('inp-risk').value);
   const macro = document.getElementById('inp-macro').value;
   const dir = document.getElementById('inp-dir').value;
-  const touches = parseInt(document.getElementById('inp-touches').value) || 0;
+  const touches = parseInt(Math.max({FRESH:0,FRONT_TESTED:1,MT_MITIGATED:2,BREACHED:3}[document.getElementById("nr-demand-mit").value]||0, {FRESH:0,FRONT_TESTED:1,MT_MITIGATED:2,BREACHED:3}[document.getElementById("nr-supply-mit").value]||0)) || 0;
   const elapsed_m = parseInt(document.getElementById('inp-elapsed-m').value) || 600;
 
   if (isNaN(low) || isNaN(high) || low >= high) {
@@ -1109,11 +1206,13 @@ async function submitNewRange() {
   };
 
   try {
+    payload.demand_mit = document.getElementById('nr-demand-mit')?.value || 'FRESH';
+    payload.supply_mit = document.getElementById('nr-supply-mit')?.value || 'FRESH';
     const res = await fetch('/api/propose_range', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({}, payload, { demand_mit: document.getElementById('nr-demand-mit')?.value || 'FRESH', supply_mit: document.getElementById('nr-supply-mit')?.value || 'FRESH' }))
+      });
     const d = await res.json();
     if (d.ok) {
       if (d.staged_proposal && d.staged_proposal.cards) {
@@ -1474,6 +1573,23 @@ async function refreshTelemetry() {
     const prop = d.staged_proposal;
     if (prop && prop.active) {
       stagedCardsCache = prop.cards || [];
+      const adv = prop.advisory;
+      const advBanner = document.getElementById('proposal-advisory-banner');
+      if (adv && advBanner) {
+        advBanner.style.display = 'flex';
+        const sc = Number(adv.score || 0);
+        const col = sc >= 80 ? 'var(--bull)' : (sc >= 60 ? 'var(--accent)' : (sc >= 40 ? 'var(--warn)' : 'var(--bear)'));
+        const bg  = sc >= 80 ? 'rgba(16,185,129,0.16)' : (sc >= 60 ? 'rgba(56,189,248,0.16)' : (sc >= 40 ? 'rgba(245,158,11,0.16)' : 'rgba(244,63,94,0.16)'));
+        const badge = document.getElementById('adv-score-badge');
+        badge.textContent = `ADVISORY CONFIDENCE: ${sc.toFixed(1)}/100 • ${adv.tier || ''}`;
+        badge.style.color = col;
+        badge.style.background = bg;
+        document.getElementById('adv-note-text').textContent = adv.note || 'Advisory only — all profiles unlocked below.';
+        document.getElementById('adv-s-brk').textContent  = `${Number(adv.s_brk_fit || 0).toFixed(0)}%`;
+        document.getElementById('adv-s-sym').textContent  = `${Number(adv.s_symmetry || 0).toFixed(0)}%`;
+        document.getElementById('adv-s-mt').textContent   = `${Number(adv.s_mt || 0).toFixed(0)}%`;
+      }
+
       pDrawer.style.display = 'block';
       document.getElementById('prop-tf-badge').textContent = `${prop.tf} Tier`;
       document.getElementById('prop-draft-badge').textContent = `Draft: ${(prop.draft_low || 0).toFixed(2)} — ${(prop.draft_high || 0).toFixed(2)} (${(prop.draft_span || 0).toFixed(2)} pts)`;
@@ -2476,6 +2592,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "brk_high_back": sb
             }
 
+            _cur_px = float(data.get("current_price") or _TELEMETRY.get("last_price") or _TELEMETRY.get("live_price") or (0.5 * (low + high)))
+            _t_sz = TICK_SIZES.get(instrument, 0.25) if "TICK_SIZES" in globals() else 0.25
+            _adv = compute_prelaunch_advisory(low, high, df, db, sf, sb, _cur_px, mult, fee, _t_sz, data.get("demand_mit", "FRESH"), data.get("supply_mit", "FRESH"))
             _TELEMETRY["staged_proposal"] = {
                 "active": True,
                 "tf": tf,
@@ -2488,6 +2607,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "tp_dlr": round(geom.s_harvest * mult, 2),
                 "fee_per_rt": fee,
                 "fee_drag_pct": round((fee / (geom.s_harvest * mult) * 100.0), 1) if (geom.s_harvest * mult) > 0 else 0.0,
+                "advisory": _adv,
                 "cards": calc_cards
             }
 
