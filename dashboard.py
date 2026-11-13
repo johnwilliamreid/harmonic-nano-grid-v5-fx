@@ -2370,13 +2370,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 _TELEMETRY["grid"] = grid_list
                 _TELEMETRY["lifecycle"]["status"] = "ACTIVE_QUOTING"
 
+            _arm_adv = dict((_TELEMETRY.get("staged_proposal") or {}).get("advisory") or {})
+            if setup:
+                _arm_adv.setdefault("demand_mit", setup.get("demand_mit", "FRESH"))
+                _arm_adv.setdefault("supply_mit", setup.get("supply_mit", "FRESH"))
+
             _PENDING_GEOM = None
             if "staged_proposal" in _TELEMETRY:
                 _TELEMETRY["staged_proposal"]["active"] = False
 
             try:
                 if _ON_ARM_CALLBACK:
-                    _ON_ARM_CALLBACK({"mode": mode, "posture": posture, "rotation_overrides": rot_overrides})
+                    _ON_ARM_CALLBACK({"mode": mode, "posture": posture, "rotation_overrides": rot_overrides, "advisory": _arm_adv})
             except Exception as e:
                 print(f"[Dashboard] ⚠️ Error in _ON_ARM_CALLBACK: {e}")
 
@@ -2622,7 +2627,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "brk_low_front": df,
                 "brk_low_back": db,
                 "brk_high_front": sf,
-                "brk_high_back": sb
+                "brk_high_back": sb,
+                "demand_mit": data.get("demand_mit", "FRESH"),
+                "supply_mit": data.get("supply_mit", "FRESH")
             }
 
             _cur_px = float(data.get("current_price") or _TELEMETRY.get("last_price") or _TELEMETRY.get("live_price") or (0.5 * (low + high)))

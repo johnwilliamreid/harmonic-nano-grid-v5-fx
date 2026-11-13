@@ -70,6 +70,50 @@ def render_report():
     else:
         print("No completed rung cycles yet. Quoting active orders...")
 
+
+    print("-" * 86)
+    print(" 📐 PRE-LAUNCH GEOMETRY ADVISORY ACCURACY (EMPIRICAL CALIBRATION)")
+    print("-" * 86)
+    print(f"{'Confidence Tier':<18} {'Sess':<5} {'AvgScr':<7} {'Fit/Sym/MT':<13} {'Cycles':<7} {'Win%':<7} {'Stop%':<7} {'Net PnL($)':<10}")
+    print("-" * 86)
+    try:
+        cur.execute("""
+            SELECT
+                COALESCE(s.advisory_tier, 'UNSCORED') AS tier,
+                COUNT(DISTINCT s.session_uid) AS sessions,
+                ROUND(AVG(s.advisory_score), 1) AS avg_score,
+                ROUND(AVG(s.s_brk_fit), 0) AS avg_fit,
+                ROUND(AVG(s.s_symmetry), 0) AS avg_sym,
+                ROUND(AVG(s.s_mt), 0) AS avg_mt,
+                COUNT(c.cycle_id) AS cycles,
+                ROUND(COALESCE(SUM(CASE WHEN c.net_pnl > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(c.cycle_id), 0), 0.0), 1) AS win_pct,
+                ROUND(COALESCE(SUM(CASE WHEN c.exit_type = 'SL_STOP' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(c.cycle_id), 0), 0.0), 1) AS stop_pct,
+                ROUND(COALESCE(SUM(c.net_pnl), 0.0), 2) AS net_pnl
+            FROM analytics_sessions s
+            LEFT JOIN level_cycles c ON c.session_uid = s.session_uid AND c.exit_type IS NOT NULL
+            GROUP BY COALESCE(s.advisory_tier, 'UNSCORED')
+            ORDER BY
+                CASE COALESCE(s.advisory_tier, 'UNSCORED')
+                    WHEN 'HIGH CONFIDENCE' THEN 1
+                    WHEN 'MODERATE' THEN 2
+                    WHEN 'LOW / DEGRADED' THEN 3
+                    WHEN 'WEAK / BREACHED' THEN 4
+                    ELSE 5
+                END ASC
+        """)
+        adv_rows = cur.fetchall()
+        if adv_rows:
+            for ar in adv_rows:
+                tier, sess_cnt, avg_scr, a_fit, a_sym, a_mt, cyc_cnt, win_p, stop_p, pnl = ar
+                scr_str = f"{avg_scr:.1f}" if avg_scr is not None else "  -- "
+                pillars = f"{int(a_fit or 0)}/{int(a_sym or 0)}/{int(a_mt or 0)}" if avg_scr is not None else "   --   "
+                pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+                print(f"{tier:<18} {sess_cnt:<5} {scr_str:<7} {pillars:<13} {cyc_cnt:<7} {win_p:>5.1f}%  {stop_p:>5.1f}%  {pnl_str:>9}")
+        else:
+            print("No scored sessions recorded yet.")
+    except Exception as e:
+        print(f"Advisory accuracy awaiting schema update ({e})")
+
     print("=" * 86)
     conn.close()
 

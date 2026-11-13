@@ -616,6 +616,7 @@ def run_live_session(args):
             print(f"⚡ [DASHBOARD ARM] Grid PRE-ARMED in STANDBY with posture={posture}. Awaiting Deploy.")
             try:
                 s_uid = f"SESSION_{args.instrument}_{int(time.time())}"
+                _adv_meta = cmd.get("advisory") if isinstance(cmd, dict) else None
                 data_engine.start_session(
                     session_uid=s_uid,
                     geom=geom,
@@ -623,7 +624,8 @@ def run_live_session(args):
                     posture=posture,
                     profile_name=active_profile.get("name", "Harmonic Profile"),
                     risk=args.risk,
-                    timeframe=args.tf
+                    timeframe=args.tf,
+                    advisory=_adv_meta
                 )
             except Exception as e:
                 print(f"[DataEngine] ⚠️ Arming hook warning: {e}")

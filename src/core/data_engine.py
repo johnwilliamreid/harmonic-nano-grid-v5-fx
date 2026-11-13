@@ -65,6 +65,21 @@ class GridDataEngine:
             );
             """)
 
+            # Safe schema migration for Pre-Launch Structural Advisory metadata
+            for col_def in [
+                "advisory_score REAL",
+                "advisory_tier TEXT",
+                "s_brk_fit REAL",
+                "s_symmetry REAL",
+                "s_mt REAL",
+                "demand_mit TEXT",
+                "supply_mit TEXT",
+            ]:
+                try:
+                    cur.execute(f"ALTER TABLE analytics_sessions ADD COLUMN {col_def};")
+                except Exception:
+                    pass
+
             # 2. Microstructure Level Cycles (MFE / MAE Excursion Tracking)
             cur.execute("""
             CREATE TABLE IF NOT EXISTS level_cycles (
@@ -149,25 +164,36 @@ class GridDataEngine:
             except Exception:
                 pass
 
-    def start_session(self, session_uid: str, geom: Any, instrument: str, posture: str, profile_name: str, risk: float, timeframe: str = "15m"):
-        """Initializes a new tracking session and builds the counterfactual Option A shadow grid."""
+    def start_session(self, session_uid: str, geom: Any, instrument: str, posture: str, profile_name: str, risk: float, timeframe: str = "15m", advisory: Optional[Dict[str, Any]] = None):
+        """Initializes a new tracking session, logs pre-launch advisory geometry, and builds the counterfactual Option A shadow grid."""
         self.session_uid = session_uid
         self.geom = geom
         self.instrument = instrument
         self.multiplier = getattr(geom, "multiplier", 2.0)
         self.fee_per_rt = getattr(geom, "fee_per_rt", 1.86)
 
+        adv = advisory or {}
+        adv_score = adv.get("score")
+        adv_tier = adv.get("tier")
+        s_brk_fit = adv.get("s_brk_fit")
+        s_symmetry = adv.get("s_symmetry")
+        s_mt = adv.get("s_mt")
+        d_mit = adv.get("demand_mit")
+        s_mit = adv.get("supply_mit")
+
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
             INSERT OR REPLACE INTO analytics_sessions 
-            (session_uid, instrument, timeframe, range_low, range_high, p_eq, s_step, s_harvest, posture, profile_name, risk_budget, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (session_uid, instrument, timeframe, range_low, range_high, p_eq, s_step, s_harvest, posture, profile_name, risk_budget, created_at,
+             advisory_score, advisory_tier, s_brk_fit, s_symmetry, s_mt, demand_mit, supply_mit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_uid, instrument, timeframe,
                 geom.range_low, geom.range_high,
                 (geom.range_low + geom.range_high) / 2.0,
                 geom.s_step, geom.s_harvest,
-                posture, profile_name, risk, time.time()
+                posture, profile_name, risk, time.time(),
+                adv_score, adv_tier, s_brk_fit, s_symmetry, s_mt, d_mit, s_mit
             ))
             conn.commit()
 
@@ -555,3 +581,34 @@ class GridDataEngine:
         except Exception:
             pass
         return recs
+
+    def get_advisory_score_accuracy(self):
+        """Aggregates realized cycle performance & regime alpha by Pre-Launch Structural Confidence Tier."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            rows = cur.execute("""
+                SELECT
+                    COALESCE(s.advisory_tier, 'UNSCORED') AS tier,
+                    COUNT(DISTINCT s.session_uid) AS sessions,
+                    ROUND(AVG(s.advisory_score), 1) AS avg_score,
+                    ROUND(AVG(s.s_brk_fit), 0) AS avg_brk_fit,
+                    ROUND(AVG(s.s_symmetry), 0) AS avg_sym,
+                    ROUND(AVG(s.s_mt), 0) AS avg_mt,
+                    COUNT(c.cycle_id) AS cycles,
+                    ROUND(COALESCE(SUM(CASE WHEN c.net_pnl > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(c.cycle_id), 0), 0.0), 1) AS win_pct,
+                    ROUND(COALESCE(SUM(CASE WHEN c.exit_type = 'SL_STOP' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(c.cycle_id), 0), 0.0), 1) AS stop_pct,
+                    ROUND(COALESCE(SUM(c.net_pnl), 0.0), 2) AS net_pnl
+                FROM analytics_sessions s
+                LEFT JOIN level_cycles c ON c.session_uid = s.session_uid AND c.exit_type IS NOT NULL
+                GROUP BY COALESCE(s.advisory_tier, 'UNSCORED')
+                ORDER BY
+                    CASE COALESCE(s.advisory_tier, 'UNSCORED')
+                        WHEN 'HIGH CONFIDENCE' THEN 1
+                        WHEN 'MODERATE' THEN 2
+                        WHEN 'LOW / DEGRADED' THEN 3
+                        WHEN 'WEAK / BREACHED' THEN 4
+                        ELSE 5
+                    END ASC
+            """).fetchall()
+            return [dict(r) for r in rows]
