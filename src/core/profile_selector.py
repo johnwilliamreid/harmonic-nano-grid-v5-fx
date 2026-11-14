@@ -16,7 +16,7 @@ class V5SelectionContext:
     elapsed_seconds:float=0.0; max_lifespan_seconds:float=3840.0
     empirical_stats:Dict[str,Dict[str,float]]=field(default_factory=dict)
 class V5ProfileSelector:
-    W={"regime":0.30,"geometry":0.25,"symmetry":0.15,"mitigation":0.15,"lifecycle":0.15}
+    W={"geometry":0.35,"symmetry":0.25,"mitigation":0.25,"lifecycle":0.15}
     def __init__(self,tau=0.15,lmax=0.25,n0=20.0): self.tau,self.lmax,self.n0=tau,lmax,n0
     def evaluate(self,ctx):
         span=max(1e-9,ctx.range_high-ctx.range_low)
@@ -33,7 +33,7 @@ class V5ProfileSelector:
         for p in PROFILES:
             ok,why=self._gate(p,ctx,span,dp_min)
             if not ok: ranks[p]={"feasible":False,"utility":0.0,"probability":0.0,"reasons":why}; continue
-            u=max(0.0,self.W["regime"]*self._p1(p,ctx)+self.W["geometry"]*self._p2(p,wl,rc)+self.W["symmetry"]*self._p3(p,sym)+self.W["mitigation"]*self._p4(p,ctx.demand_mit,ctx.supply_mit)+self.W["lifecycle"]*self._p5(p,ctx.drawdown_type,age)+self._emp(p,ctx.empirical_stats))
+            u=max(0.0,self.W["geometry"]*self._p2(p,wl,rc)+self.W["symmetry"]*self._p3(p,sym)+self.W["mitigation"]*self._p4(p,ctx.demand_mit,ctx.supply_mit)+self.W["lifecycle"]*self._p5(p,ctx.drawdown_type,age)+self._emp(p,ctx.empirical_stats))
             utils[p]=u; ranks[p]={"feasible":True,"utility":round(u,4),"reasons":self._tags(p,ctx,wl,rc,sym,age)}
         if utils:
             mu=max(utils.values()); ex={p:math.exp((u-mu)/self.tau) for p,u in utils.items()}; den=sum(ex.values())
@@ -74,7 +74,7 @@ class V5ProfileSelector:
 
 def apply_selector(inst,low,high,df,db,sf,sb,data,tel,cards):
     m,fee=resolve_v5_economics(inst,low,high); b=tel.get("bias") or {}
-    res=V5ProfileSelector().evaluate(V5SelectionContext(range_low=low,range_high=high,multiplier=m,fee_per_rt=fee,s_bias=float(b.get("s_bias",0) or 0),macro_regime=str(b.get("regime","RANGE")),d_front=df,d_back=db,s_front=sf,s_back=sb,demand_mit=str(data.get("demand_mit","FRESH")).upper(),supply_mit=str(data.get("supply_mit","FRESH")).upper(),drawdown_type=str(data.get("drawdown_type","EOD")).upper()))
+    res=V5ProfileSelector().evaluate(V5SelectionContext(range_low=low,range_high=high,multiplier=m,fee_per_rt=fee,s_bias=0.0,macro_regime="RANGE",d_front=df,d_back=db,s_front=sf,s_back=sb,demand_mit=str(data.get("demand_mit","FRESH")).upper(),supply_mit=str(data.get("supply_mit","FRESH")).upper(),drawdown_type=str(data.get("drawdown_type","EOD")).upper()))
     tel["staged_proposal"]["selector_eval"]=res
     for c in cards:
         rk=res.get("rankings",{}).get((c.get("key") or c.get("id")),{})
