@@ -2087,7 +2087,7 @@ function openAuditorModal(selectedKey) {
       const why = (r.reasons && r.reasons.length) ? r.reasons.join(" • ") : "Passed gates";
       return "<tr><td><b>" + c.title + bf + "</b></td><td style=text-align:right;color:var(--accent);>" + ((r.probability||0)*100).toFixed(1) + "%</td><td style=text-align:right;>" + (r.utility||0).toFixed(3) + "</td><td style=color:#8b949e;>" + why + "</td></tr>";
     }).join("");
-    body.innerHTML += "<div style=margin-top:14px;padding:12px;border:1px solid #388bfd;border-radius:6px;><div style=font-weight:800;color:#58a6ff;margin-bottom:6px;>🎯 PROFILE SELECTOR SCORING (25% Drag Floor: " + (dg.dp_min_fee_floor||"--") + " pts | Sym: " + ((dg.symmetry_score||0)*100).toFixed(0) + "%)</div><table class=aud-tbl><thead><tr><th>Profile</th><th style=text-align:right;>Fit %</th><th style=text-align:right;>Utility</th><th>Reasoning</th></tr></thead><tbody>" + rowsH + "</tbody></table></div>";
+    body.innerHTML += "<div style=margin-top:14px;padding:12px;border:1px solid #388bfd;border-radius:6px;><div style=font-weight:800;color:#58a6ff;margin-bottom:6px;>🎯 PROFILE SELECTOR SCORING (Fee Drag: " + (dg.fee_drag_pct!==undefined?dg.fee_drag_pct+"%":"--") + " | 25–30% Taper: " + (dg.dp_hard_floor||"--") + "–" + (dg.dp_min_fee_floor||"--") + " pts | Sym: " + ((dg.symmetry_score||0)*100).toFixed(0) + "%)</div><table class=aud-tbl><thead><tr><th>Profile</th><th style=text-align:right;>Fit %</th><th style=text-align:right;>Utility</th><th>Reasoning</th></tr></thead><tbody>" + rowsH + "</tbody></table></div>";
   }
   overlay.style.display = "flex";
 }
