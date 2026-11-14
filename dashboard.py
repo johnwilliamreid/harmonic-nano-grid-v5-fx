@@ -1296,26 +1296,6 @@ function showGridPreview(key) {
     const _sl=(_prop&&_step>0)?(r.side==='LONG'?(_prop.draft_low-_step):(_prop.draft_high+_step)):0;
     const _rVal=(isActive&&_sl>0)?(Math.abs(_sl-Number(r.price))*qty*_tM + qty*_tF):(r.risk_dollar&&r.risk_dollar>0?(Number(r.risk_dollar)/2.0)*_tM:0);
     const riskStr=_rVal>0?`$${_rVal.toFixed(2)}`:'--';
-    const qtyStr = isActive ? `<b style="color:var(--warn); font-weight:800;">${qty} ct</b>` : '<span style="color:var(--text-dim);">-</span>';
-
-    const tr = document.createElement('tr');
-    tr.style.opacity = isActive ? '1.0' : '0.4';
-    tr.innerHTML = `
-      <td class="mono"><b>L${idx}</b></td>
-      <td style="color:${sideColor}; font-weight:700;">${action}</td>
-      <td class="mono" style="text-align:right; font-weight:700;">${priceStr}</td>
-      <td class="mono" style="text-align:center;">${qtyStr}</td>
-      <td class="mono" style="text-align:center; color:var(--accent);">${isActive ? `0 / <input type="number" min="0" max="50" step="1" value="${(window._PREVIEW_CAP_OVERRIDES[key]?.[idx]) ?? r.cap ?? 4}" onchange="updatePreviewCap('${key}', ${idx}, this.value)" style="width:42px; background:rgba(0,0,0,0.65); border:1px solid var(--accent); border-radius:4px; color:var(--accent); text-align:center; font-family:'JetBrains Mono',monospace; font-weight:800; font-size:11px; padding:1px 2px;"> rot` : "-"}</td>
-      <td class="mono" style="text-align:right;">${tpStr}</td>
-      <td class="mono" style="text-align:right; color:var(--bear);">${riskStr}</td>
-      <td style="text-align:center;">${status}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  previewBox.style.display = 'block';
-  previewBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
 
 
 async function submitDeploy() {
