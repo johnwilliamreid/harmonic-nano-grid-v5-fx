@@ -1861,7 +1861,7 @@ function openAuditorModal(selectedKey) {
 
   let rungsList = [];
   let inst = tel.instrument || "NNQ";
-  let mult = (inst === "MNQ") ? 2.0 : 0.20;
+  const _mT={MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0}; let mult=_mT[String(inst).toUpperCase()]||0.20;
   const _sym = (document.getElementById("inp-instrument")?.value || "MNQ").toUpperCase(); let fee = _sym === "NNQ" ? 1.68 : (_sym === "MNQ" ? 1.86 : 1.94);
   let sideBudget = 200.0;
   let l0 = 0.0, l16 = 0.0;
