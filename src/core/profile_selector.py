@@ -70,7 +70,15 @@ class V5ProfileSelector:
         if not r or r.get("n",0)<=0: return 0.0
         n=float(r["n"]); sh=max(-1.0,min(1.0,float(r.get("mean_alpha",0.0))/(float(r.get("std_pnl",100.0))+1e-6)))
         return (self.lmax*(n/(n+self.n0)))*sh*(1.0-float(r.get("blowout_rate",0.0)))
-    def _tags(self,p,ctx,wl,rc,sym,age): return []
+    def _tags(self,p,ctx,wl,rc,sym,age):
+        t=[]
+        if (wl>5.0 or rc<0.25) and p in ("OPTION_B","LEAN_2_RUNG"): t.append(f"+Wide breakers ({wl:.1f}L): skips midline chop")
+        elif wl<3.0 and p in ("OPTION_C","OPTION_G_MT_CORE"): t.append(f"+Tight shelf ({wl:.1f}L): core density favored")
+        elif 3.0<=wl<=5.0 and p in ("SNAPPED","OPTION_G_MT_CORE","OPTION_A"): t.append(f"+Balanced width ({wl:.1f}L)")
+        if sym>=0.80 and p in ("OPTION_A","OPTION_B","OPTION_C"): t.append(f"+High symmetry ({sym*100:.0f}%)")
+        elif sym<0.70 and p in ("SNAPPED","OPTION_G_MT_CORE","LEAN_2_RUNG"): t.append(f"+Asymmetric ({sym*100:.0f}%) favors snap")
+        if "MT_MITIGATED" in {ctx.demand_mit,ctx.supply_mit} and p in ("OPTION_G_MT_CORE","LEAN_2_RUNG"): t.append("+MT tapped: caps at 50% line")
+        return t or [f"Geom {wl:.1f}L • Sym {sym*100:.0f}%"]
 
 def apply_selector(inst,low,high,df,db,sf,sb,data,tel,cards):
     m,fee=resolve_v5_economics(inst,low,high); b=tel.get("bias") or {}
@@ -79,5 +87,5 @@ def apply_selector(inst,low,high,df,db,sf,sb,data,tel,cards):
     for c in cards:
         rk=res.get("rankings",{}).get((c.get("key") or c.get("id")),{})
         if rk:
-            c["fit_probability"]=round(float(rk.get("probability",0))*100.0,1)
+            c["fit_probability"]=round(float(rk.get("probability",0))*100.0,1); c["fit_reasons"]=rk.get("reasons",[])
             if (c.get("key") or c.get("id"))==res.get("best_fit"): c["recommended"]=True; c["is_best_fit"]=True
