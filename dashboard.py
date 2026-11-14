@@ -2078,6 +2078,7 @@ function openAuditorModal(selectedKey) {
       <div><b>1/8 Harvest Yield:</b> $${stepHarvest} gross/ct</div>
     </div>
   `;
+  const se = (prop && prop.selector_eval) ? prop.selector_eval : null;
   if (se && se.rankings) {
     const dg = se.diagnostics || {};
     const rowsH = (allCards || []).map(c => {

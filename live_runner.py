@@ -1284,7 +1284,7 @@ def run_live_session(args):
                 last_breaker_dir=args.brk_dir,
                 elapsed_seconds=args.brk_age + elapsed,
                 mitigation_touches=args.brk_touches,
-                current_price=live_px if live_px > 0 else None,
+                current_price=live_px if (live_px or 0.0) > 0 else None,
                 timeframe=args.tf,
                 prior_regime=bias_data.get("regime", "NEUTRAL_EQUILIBRIUM")
             )
