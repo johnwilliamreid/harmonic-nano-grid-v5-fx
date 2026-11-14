@@ -2651,6 +2651,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "cards": calc_cards
             }
 
+            from src.core.profile_selector import apply_selector
+            apply_selector(instrument, low, high, df, db, sf, sb, data, _TELEMETRY, calc_cards)
             if _ON_PROPOSE_CALLBACK:
                 _ON_PROPOSE_CALLBACK(data)
 
