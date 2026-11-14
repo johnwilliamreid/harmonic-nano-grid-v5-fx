@@ -847,7 +847,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:14px 0;"></div><div id="sel-score-box" style="display:none;margin:10px 0 14px;padding:10px 12px;background:rgba(15,23,42,0.8);border:1px solid var(--border);border-radius:6px;"><div style="font-size:11px;font-weight:800;color:var(--accent);margin-bottom:6px;">🎯 PROFILE SELECTOR SCORING (35% GEOM • 25% SYM • 25% MT • 15% DD • 0% BIAS)</div><table style="width:100%;border-collapse:collapse;font-size:11px;"><tbody id="sel-score-tbody"></tbody></table></div>
+  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:14px 0;"></div>
 
   <div id="preview-matrix-container">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -1294,7 +1294,7 @@ function showGridPreview(key) {
   riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${dispRisk.toFixed(2)}</span>`;
 
   tbody.innerHTML = '';
-  const rows = (ibAcct && ibAcct.grid_matrix && ibAcct.grid_matrix.length) ? ibAcct.grid_matrix : (card.grid_matrix || card.rungs_preview || []);
+  const rows = card.grid_matrix || card.rungs_preview || [];
 
   rows.forEach(r => {
     const idx = r.index !== undefined ? r.index : r.idx;
@@ -1611,7 +1611,6 @@ async function refreshTelemetry() {
         dragBadge.style.background = drag > 20 ? 'rgba(244,63,94,0.15)' : (drag > 12 ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)');
       }
 
-      const sb=document.getElementById("sel-score-box"),st=document.getElementById("sel-score-tbody");if(sb&&st&&prop.selector_eval&&prop.selector_eval.rankings){const rk=prop.selector_eval.rankings;st.innerHTML=(prop.cards||[]).map(c=>{const r=rk[c.key]||{};return "<tr style=\"border-bottom:1px solid rgba(255,255,255,0.06);\"><td style=\"padding:4px;font-weight:600;\">"+c.title+"</td><td class=\"mono\" style=\"padding:4px;text-align:right;color:var(--accent);\">"+((r.probability||0)*100).toFixed(1)+"%</td><td class=\"mono\" style=\"padding:4px;text-align:right;\">"+(r.utility||0).toFixed(3)+"</td><td style=\"padding:4px;color:var(--text-muted);\">"+((r.reasons||[]).join(" • ")||"Blocked by gate")+"</td></tr>";}).join("");sb.style.display="block";}
       const cardsContainer = document.getElementById('proposal-cards-container');
       if (cardsContainer && prop.cards) {
         cardsContainer.innerHTML = prop.cards.map(c => {
@@ -1632,7 +1631,7 @@ async function refreshTelemetry() {
                   <b style="color:var(--text); font-size:12px;">${c.title} ${c.is_best_fit ? `<span class="badge badge-status-active" style="font-size:9px; margin-left:5px;">BEST FIT • ${Number(c.fit_probability || 0).toFixed(1)}%</span>` : (c.fit_probability != null ? `<span class="badge" style="background:rgba(56,189,248,0.12); color:var(--accent); font-size:9px; margin-left:5px;">${Number(c.fit_probability).toFixed(1)}% FIT</span>` : "")}</b>
                   ${budgetTag}
                 </div>
-                ${(c.fit_reasons&&c.fit_reasons.length)?`<div style="font-size:10px;color:var(--accent);margin:-2px 0 6px;">${c.fit_reasons.join(" • ")}</div>`:`<div style="font-size:10px;color:var(--text-dim);margin:-2px 0 6px;">Blocked by gate</div>`}<div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
+                <div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
                 ${acctBreakdownHtml}
                 <div class="stat-row"><span class="stat-label">Avg Yield / Rot</span><span class="stat-val mono" style="color:var(--bull); font-weight:700;">+$${Number(c.harvest_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">($${c.min_rot_yield}–$${c.max_rot_yield})</span></span></div>
                 <div class="stat-row"><span class="stat-label">Total Side Yield</span><span class="stat-val mono" style="color:var(--bull); font-weight:800;">+$${Number(c.side_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">(${c.side_cts || 0} ct)</span></span></div>
@@ -2581,9 +2580,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         if not a_fits:
                             all_accounts_fit = False
                         fleet_total_side_risk += a_max_side
-                        a_mat = [{"index": i, "side": a_g[i].get("side","MID"), "role": a_g[i].get("role","MID_RANGE"), "price": round(a_g[i].get("price",0.0),2), "tp": round(a_g[i].get("tp",0.0),2), "contracts": a_g[i].get("contracts",0), "risk_dollar": round(a_g[i].get("risk_dollar",0.0),2)} for i in range(16,-1,-1) if i in a_g]
                         account_risks.append({
-                            "grid_matrix": a_mat,
                             "id": a_id,
                             "instrument": a_inst,
                             "budget": round(a_bud, 2),

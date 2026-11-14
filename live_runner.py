@@ -362,7 +362,7 @@ def run_live_session(args):
                         break
                 time.sleep(0.5)
 
-            print(f"[Runner] 🎯 Reference price: {(getattr(broker, 'last_price', None) or 0.0):.2f}")
+            print(f"[Runner] 🎯 Reference price: {getattr(broker, 'last_price', 0.0):.2f}")
 
         except Exception as e:
             print(f"[Runner] ❌ Broker init error: {e}")
@@ -940,7 +940,7 @@ def run_live_session(args):
 
             state["unrealized_pnl"] = round(total_floating_pnl, 2)
 
-            if (live_px or 0.0) > 0:
+            if live_px > 0:
                 data_store.evaluate_level_touches(current_price=live_px, high=live_px, low=live_px)
                 data_store.update_price_excursion(current_price=live_px)
 
@@ -997,7 +997,7 @@ def run_live_session(args):
                     print(f"[Telegram] Failed to send standby heartbeat: {e}")
 
             p_eq = round((geom.range_low + geom.range_high) / 2.0, 2)
-            if (live_px or 0.0) > 0:
+            if live_px > 0:
                 cur_vs_eq = 1 if live_px >= p_eq else -1
                 if prior_price_vs_eq != 0 and cur_vs_eq != prior_price_vs_eq and not eq_alert_triggered:
                     eq_alert_triggered = True
@@ -1284,7 +1284,7 @@ def run_live_session(args):
                 last_breaker_dir=args.brk_dir,
                 elapsed_seconds=args.brk_age + elapsed,
                 mitigation_touches=args.brk_touches,
-                current_price=live_px if (live_px or 0.0) > 0 else None,
+                current_price=live_px if live_px > 0 else None,
                 timeframe=args.tf,
                 prior_regime=bias_data.get("regime", "NEUTRAL_EQUILIBRIUM")
             )
@@ -1295,7 +1295,7 @@ def run_live_session(args):
             bias_data["touches"] = args.brk_touches
             bias_data["k"] = bias_calc.TIMEFRAME_DECAY.get(args.tf, 0.00025)
 
-            if (live_px or 0.0) > 0:
+            if live_px > 0:
                 try:
                     data_engine.track_virtual_rung_touches(live_px, now, geom, args.instrument)
                     data_engine.on_market_tick(live_px, now)
