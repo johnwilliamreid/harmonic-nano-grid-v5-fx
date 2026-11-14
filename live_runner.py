@@ -362,7 +362,7 @@ def run_live_session(args):
                         break
                 time.sleep(0.5)
 
-            print(f"[Runner] 🎯 Reference price: {(getattr(broker, "last_price", None) or 0.0):.2f}")
+            print(f"[Runner] 🎯 Reference price: {(getattr(broker, 'last_price', None) or 0.0):.2f}")
 
         except Exception as e:
             print(f"[Runner] ❌ Broker init error: {e}")
