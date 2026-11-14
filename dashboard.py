@@ -2078,28 +2078,15 @@ function openAuditorModal(selectedKey) {
       <div><b>1/8 Harvest Yield:</b> $${stepHarvest} gross/ct</div>
     </div>
   `;
-
-  const se = (prop && prop.selector_eval) ? prop.selector_eval : null;
   if (se && se.rankings) {
     const dg = se.diagnostics || {};
     const rowsH = (allCards || []).map(c => {
       const r = se.rankings[c.key] || {};
-      const bf = c.key === se.best_fit ? " <span class=\"badge badge-status-active\" style=\"font-size:9px;\">BEST</span>" : "";
+      const bf = c.key === se.best_fit ? " [BEST]" : "";
       const why = (r.reasons && r.reasons.length) ? r.reasons.join(" • ") : "Passed gates";
-      return "<tr><td><b>" + c.title + "</b>" + bf + "</td><td class=\"mono\" style=\"text-align:right;color:var(--accent);\">" + ((r.probability||0)*100).toFixed(1) + "%</td><td class=\"mono\" style=\"text-align:right;\">" + (r.utility||0).toFixed(3) + "</td><td style=\"color:#8b949e;\">" + why + "</td></tr>";
+      return "<tr><td><b>" + c.title + bf + "</b></td><td style=text-align:right;color:var(--accent);>" + ((r.probability||0)*100).toFixed(1) + "%</td><td style=text-align:right;>" + (r.utility||0).toFixed(3) + "</td><td style=color:#8b949e;>" + why + "</td></tr>";
     }).join("");
-    body.innerHTML += "<div style=\"margin-top:14px;padding:12px 14px;background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.25);border-radius:6px;\"><div style=\"display:flex;justify-content:space-between;margin-bottom:8px;\"><span style=\"font-weight:800;color:#58a6ff;\">🎯 PROFILE SELECTOR SCORING (35% GEOM • 25% SYM • 25% MT • 15% DD • 0% BIAS)</span><span class=\"mono\" style=\"font-size:11px;color:#8b949e;\">25% Drag Floor: <b>" + (dg.dp_min_fee_floor||"--") + " pts</b> | Sym: <b>" + ((dg.symmetry_score||0)*100).toFixed(0) + "%</b></span></div><table class=\"aud-tbl\"><thead><tr><th>Profile</th><th style=\"text-align:right;\">Fit %</th><th style=\"text-align:right;\">Utility</th><th>Gate / Attribution Reasoning</th></tr></thead><tbody>" + rowsH + "</tbody></table></div>";
-  }
-  const se = (prop && prop.selector_eval) ? prop.selector_eval : null;
-  if (se && se.rankings) {
-    const dg = se.diagnostics || {};
-    const rowsH = (allCards || []).map(c => {
-      const r = se.rankings[c.key] || {};
-      const bf = c.key === se.best_fit ? ' <span class="badge badge-status-active" style="font-size:9px;">BEST</span>' : '';
-      const why = (r.reasons && r.reasons.length) ? r.reasons.join(' • ') : 'Passed gates';
-      return '<tr><td><b>' + c.title + '</b>' + bf + '</td><td class="mono" style="text-align:right;color:var(--accent);">' + ((r.probability||0)*100).toFixed(1) + '%</td><td class="mono" style="text-align:right;">' + (r.utility||0).toFixed(3) + '</td><td style="color:#8b949e;">' + why + '</td></tr>';
-    }).join('');
-    body.innerHTML += '<div style="margin-top:14px;padding:12px 14px;background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.25);border-radius:6px;"><div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="font-weight:800;color:#58a6ff;">🎯 PROFILE SELECTOR SCORING (35% GEOM • 25% SYM • 25% MT • 15% DD • 0% BIAS)</span><span class="mono" style="font-size:11px;color:#8b949e;">25% Drag Floor: <b>' + (dg.dp_min_fee_floor||'--') + ' pts</b> | Sym: <b>' + ((dg.symmetry_score||0)*100).toFixed(0) + '%</b></span></div><table class="aud-tbl"><thead><tr><th>Profile</th><th style="text-align:right;">Fit %</th><th style="text-align:right;">Utility</th><th>Gate / Attribution Reasoning</th></tr></thead><tbody>' + rowsH + '</tbody></table></div>';
+    body.innerHTML += "<div style=margin-top:14px;padding:12px;border:1px solid #388bfd;border-radius:6px;><div style=font-weight:800;color:#58a6ff;margin-bottom:6px;>🎯 PROFILE SELECTOR SCORING (25% Drag Floor: " + (dg.dp_min_fee_floor||"--") + " pts | Sym: " + ((dg.symmetry_score||0)*100).toFixed(0) + "%)</div><table class=aud-tbl><thead><tr><th>Profile</th><th style=text-align:right;>Fit %</th><th style=text-align:right;>Utility</th><th>Reasoning</th></tr></thead><tbody>" + rowsH + "</tbody></table></div>";
   }
   overlay.style.display = "flex";
 }
