@@ -202,6 +202,7 @@ def run_live_session(args):
                 set_account_action_callback(fleet_dispatcher.account_action)
                 set_account_budget_callback(fleet_dispatcher.update_account_budget)
                 set_account_instrument_callback(fleet_dispatcher.update_account_instrument)
+                update_telemetry({"accounts": fleet_dispatcher.get_fleet_telemetry()})
                 print(f"[Runner] 🌐 Fleet Dispatcher initialized with {len(fleet_dispatcher.accounts)} accounts!")
         except Exception as e:
             print(f"[Runner] ⚠️ Fleet Dispatcher init warning: {e}")
