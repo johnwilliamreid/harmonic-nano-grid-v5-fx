@@ -1286,6 +1286,7 @@ function showGridPreview(key) {
     return;
   }
 
+  const _mMap = {MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0};
   const ibAcct = (card.account_risks || []).find(a => a.id.includes("IRONBEAM")) || (card.account_risks || [])[0];
   const acctLabel = ibAcct ? ` [${ibAcct.id} • ${ibAcct.instrument}]` : "";
   const dispRisk = ibAcct ? ibAcct.side_risk : card.side_risk;
