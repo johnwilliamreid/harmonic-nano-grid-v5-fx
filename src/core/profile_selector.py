@@ -77,7 +77,7 @@ def apply_selector(inst,low,high,df,db,sf,sb,data,tel,cards):
     res=V5ProfileSelector().evaluate(V5SelectionContext(range_low=low,range_high=high,multiplier=m,fee_per_rt=fee,s_bias=float(b.get("s_bias",0) or 0),macro_regime=str(b.get("regime","RANGE")),d_front=df,d_back=db,s_front=sf,s_back=sb,demand_mit=str(data.get("demand_mit","FRESH")).upper(),supply_mit=str(data.get("supply_mit","FRESH")).upper(),drawdown_type=str(data.get("drawdown_type","EOD")).upper()))
     tel["staged_proposal"]["selector_eval"]=res
     for c in cards:
-        rk=res.get("rankings",{}).get(c.get("id"),{})
+        rk=res.get("rankings",{}).get((c.get("key") or c.get("id")),{})
         if rk:
             c["fit_probability"]=round(float(rk.get("probability",0))*100.0,1)
-            if c.get("id")==res.get("best_fit"): c["recommended"]=True; c["is_best_fit"]=True
+            if (c.get("key") or c.get("id"))==res.get("best_fit"): c["recommended"]=True; c["is_best_fit"]=True
