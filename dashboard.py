@@ -1286,26 +1286,16 @@ function showGridPreview(key) {
     return;
   }
 
-  const _mMap = {MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0};
-  const ibAcct = (card.account_risks || []).find(a => a.id.includes("IRONBEAM")) || (card.account_risks || [])[0];
-  const acctLabel = ibAcct ? ` [${ibAcct.id} • ${ibAcct.instrument}]` : "";
-  const dispRisk = ibAcct ? ibAcct.side_risk : card.side_risk;
-  titleElem.textContent = `🔍 GRID MATRIX PREVIEW: ${card.title.toUpperCase()}${acctLabel}`;
-  riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${dispRisk.toFixed(2)}</span>`;
-
-  tbody.innerHTML = '';
-  const rows = card.grid_matrix || card.rungs_preview || [];
-
-  rows.forEach(r => {
-    const idx = r.index !== undefined ? r.index : r.idx;
-    const qty = r.contracts || 0;
-    const isActive = qty > 0;
-    const sideColor = r.side === 'LONG' ? 'var(--bull)' : (r.side === 'SHORT' ? 'var(--bear)' : 'var(--text-muted)');
-    const action = r.side === 'LONG' ? 'BUY (BID)' : (r.side === 'SHORT' ? 'SELL (ASK)' : 'EQUILIBRIUM');
-    const status = isActive ? '<span class="status-tag st-active">ARMED</span>' : '<span style="color:var(--text-dim);">STANDBY</span>';
-    const priceStr = r.price ? Number(r.price).toFixed(2) : '--';
-    const tpStr = r.tp ? Number(r.tp).toFixed(2) : '--';
-    const _pM={MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0}; const _acInst=(typeof ibAcct!=="undefined"&&ibAcct&&ibAcct.instrument)?ibAcct.instrument.toUpperCase():"MNQ"; const _baseM=_pM[(card.instrument||"MNQ").toUpperCase()]||2.0; const _targM=_pM[_acInst]||2.0; const _adjRisk=(r.risk_dollar&&r.risk_dollar>0)?((Number(r.risk_dollar)/_baseM)*_targM):0; const _mMap={MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0}; const _acSym=(typeof ibAcct!=='undefined'&&ibAcct&&ibAcct.instrument)?ibAcct.instrument.toUpperCase():'MNQ'; const _cM=_mMap[(card.instrument||'MNQ').toUpperCase()]||2.0; const _tM=_mMap[_acSym]||2.0; const _rVal=(r.risk_dollar&&r.risk_dollar>0)?((Number(r.risk_dollar)/_cM)*_tM):0; const riskStr=_rVal>0?`$${_rVal.toFixed(2)}`:'--';
+  const _mMap={MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0};
+    const _fMap={MNQ:1.86,NNQ:1.68,MES:1.88,M2K:1.88,MYM:1.88,MGC:5.88,MCL:3.02,NQ:5.14,ES:5.14,RTY:5.14,YM:5.14,GC:8.08,CL:8.08};
+    const _acSym=(typeof ibAcct!=='undefined'&&ibAcct&&ibAcct.instrument)?ibAcct.instrument.toUpperCase():'NNQ';
+    const _tM=_mMap[_acSym]||0.20;
+    const _tF=_fMap[_acSym]||1.68;
+    const _prop=window._LAST_TELEMETRY&&window._LAST_TELEMETRY.staged_proposal;
+    const _step=_prop&&_prop.draft_span?(_prop.draft_span/16.0):0;
+    const _sl=(_prop&&_step>0)?(r.side==='LONG'?(_prop.draft_low-_step):(_prop.draft_high+_step)):0;
+    const _rVal=(isActive&&_sl>0)?(Math.abs(_sl-Number(r.price))*qty*_tM + qty*_tF):(r.risk_dollar&&r.risk_dollar>0?(Number(r.risk_dollar)/2.0)*_tM:0);
+    const riskStr=_rVal>0?`$${_rVal.toFixed(2)}`:'--';
     const qtyStr = isActive ? `<b style="color:var(--warn); font-weight:800;">${qty} ct</b>` : '<span style="color:var(--text-dim);">-</span>';
 
     const tr = document.createElement('tr');
@@ -1631,7 +1621,7 @@ async function refreshTelemetry() {
                   <b style="color:var(--text); font-size:12px;">${c.title} ${c.is_best_fit ? `<span class="badge badge-status-active" style="font-size:9px; margin-left:5px;">BEST FIT • ${Number(c.fit_probability || 0).toFixed(1)}%</span>` : (c.fit_probability != null ? `<span class="badge" style="background:rgba(56,189,248,0.12); color:var(--accent); font-size:9px; margin-left:5px;">${Number(c.fit_probability).toFixed(1)}% FIT</span>` : "")}</b>
                   ${budgetTag}
                 </div>
-                <div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
+                ${(c.fit_reasons&&c.fit_reasons.length)?`<div style="font-size:10px;color:var(--accent);margin:-2px 0 6px 0;line-height:1.25;">${c.fit_reasons.join(" • ")}</div>`:`<div style="font-size:10px;color:var(--text-dim);margin:-2px 0 6px 0;">Blocked by structural/fee gate</div>`}<div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
                 ${acctBreakdownHtml}
                 <div class="stat-row"><span class="stat-label">Avg Yield / Rot</span><span class="stat-val mono" style="color:var(--bull); font-weight:700;">+$${Number(c.harvest_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">($${c.min_rot_yield}–$${c.max_rot_yield})</span></span></div>
                 <div class="stat-row"><span class="stat-label">Total Side Yield</span><span class="stat-val mono" style="color:var(--bull); font-weight:800;">+$${Number(c.side_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">(${c.side_cts || 0} ct)</span></span></div>
