@@ -80,4 +80,4 @@ def apply_selector(inst,low,high,df,db,sf,sb,data,tel,cards):
         rk=res.get("rankings",{}).get(c.get("id"),{})
         if rk:
             c["fit_probability"]=round(float(rk.get("probability",0))*100.0,1)
-            if c.get("id")==res.get("best_fit"): c["recommended"]=True
+            if c.get("id")==res.get("best_fit"): c["recommended"]=True; c["is_best_fit"]=True
