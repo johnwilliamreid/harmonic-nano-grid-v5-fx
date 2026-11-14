@@ -847,7 +847,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:14px 0;"></div>
+  <div id="proposal-cards-container" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:14px 0;"></div><div id="selector-reasoning-box" style="display:none;margin:10px 0 14px;padding:10px 12px;background:rgba(15,23,42,0.8);border:1px solid var(--border);border-radius:6px;"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:11px;font-weight:800;color:var(--accent);">🎯 PROFILE SELECTOR SCORING (35% GEOM • 25% SYM • 25% MT • 15% DD • 0% BIAS)</span><span id="selector-diag-meta" class="mono" style="font-size:10px;color:var(--text-muted);"></span></div><table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px;">Profile</th><th style="text-align:right;padding:4px;">Fit %</th><th style="text-align:right;padding:4px;">Utility</th><th style="text-align:left;padding:4px;">Reasoning</th></tr></thead><tbody id="selector-reasoning-tbody"></tbody></table></div>
 
   <div id="preview-matrix-container">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -1286,16 +1286,46 @@ function showGridPreview(key) {
     return;
   }
 
-  const _mMap={MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0};
-    const _fMap={MNQ:1.86,NNQ:1.68,MES:1.88,M2K:1.88,MYM:1.88,MGC:5.88,MCL:3.02,NQ:5.14,ES:5.14,RTY:5.14,YM:5.14,GC:8.08,CL:8.08};
-    const _acSym=(typeof ibAcct!=='undefined'&&ibAcct&&ibAcct.instrument)?ibAcct.instrument.toUpperCase():'NNQ';
-    const _tM=_mMap[_acSym]||0.20;
-    const _tF=_fMap[_acSym]||1.68;
-    const _prop=window._LAST_TELEMETRY&&window._LAST_TELEMETRY.staged_proposal;
-    const _step=_prop&&_prop.draft_span?(_prop.draft_span/16.0):0;
-    const _sl=(_prop&&_step>0)?(r.side==='LONG'?(_prop.draft_low-_step):(_prop.draft_high+_step)):0;
-    const _rVal=(isActive&&_sl>0)?(Math.abs(_sl-Number(r.price))*qty*_tM + qty*_tF):(r.risk_dollar&&r.risk_dollar>0?(Number(r.risk_dollar)/2.0)*_tM:0);
-    const riskStr=_rVal>0?`$${_rVal.toFixed(2)}`:'--';
+  const _mMap = {MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0};
+  const ibAcct = (card.account_risks || []).find(a => a.id.includes("IRONBEAM")) || (card.account_risks || [])[0];
+  const acctLabel = ibAcct ? ` [${ibAcct.id} • ${ibAcct.instrument}]` : "";
+  const dispRisk = ibAcct ? ibAcct.side_risk : card.side_risk;
+  titleElem.textContent = `🔍 GRID MATRIX PREVIEW: ${card.title.toUpperCase()}${acctLabel}`;
+  riskElem.innerHTML = `Side Risk: <span style="color:var(--warn); font-weight:800;">$${dispRisk.toFixed(2)}</span>`;
+
+  tbody.innerHTML = '';
+  const rows = (ibAcct && ibAcct.grid_matrix && ibAcct.grid_matrix.length) ? ibAcct.grid_matrix : (card.grid_matrix || card.rungs_preview || []);
+
+  rows.forEach(r => {
+    const idx = r.index !== undefined ? r.index : r.idx;
+    const qty = r.contracts || 0;
+    const isActive = qty > 0;
+    const sideColor = r.side === 'LONG' ? 'var(--bull)' : (r.side === 'SHORT' ? 'var(--bear)' : 'var(--text-muted)');
+    const action = r.side === 'LONG' ? 'BUY (BID)' : (r.side === 'SHORT' ? 'SELL (ASK)' : 'EQUILIBRIUM');
+    const status = isActive ? '<span class="status-tag st-active">ARMED</span>' : '<span style="color:var(--text-dim);">STANDBY</span>';
+    const priceStr = r.price ? Number(r.price).toFixed(2) : '--';
+    const tpStr = r.tp ? Number(r.tp).toFixed(2) : '--';
+    const riskStr = r.risk_dollar && r.risk_dollar > 0 ? `$${Number(r.risk_dollar).toFixed(2)}` : '--';
+    const qtyStr = isActive ? `<b style="color:var(--warn); font-weight:800;">${qty} ct</b>` : '<span style="color:var(--text-dim);">-</span>';
+
+    const tr = document.createElement('tr');
+    tr.style.opacity = isActive ? '1.0' : '0.4';
+    tr.innerHTML = `
+      <td class="mono"><b>L${idx}</b></td>
+      <td style="color:${sideColor}; font-weight:700;">${action}</td>
+      <td class="mono" style="text-align:right; font-weight:700;">${priceStr}</td>
+      <td class="mono" style="text-align:center;">${qtyStr}</td>
+      <td class="mono" style="text-align:center; color:var(--accent);">${isActive ? `0 / <input type="number" min="0" max="50" step="1" value="${(window._PREVIEW_CAP_OVERRIDES[key]?.[idx]) ?? r.cap ?? 4}" onchange="updatePreviewCap('${key}', ${idx}, this.value)" style="width:42px; background:rgba(0,0,0,0.65); border:1px solid var(--accent); border-radius:4px; color:var(--accent); text-align:center; font-family:'JetBrains Mono',monospace; font-weight:800; font-size:11px; padding:1px 2px;"> rot` : "-"}</td>
+      <td class="mono" style="text-align:right;">${tpStr}</td>
+      <td class="mono" style="text-align:right; color:var(--bear);">${riskStr}</td>
+      <td style="text-align:center;">${status}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  previewBox.style.display = 'block';
+  previewBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
 
 
 async function submitDeploy() {
@@ -1601,7 +1631,7 @@ async function refreshTelemetry() {
                   <b style="color:var(--text); font-size:12px;">${c.title} ${c.is_best_fit ? `<span class="badge badge-status-active" style="font-size:9px; margin-left:5px;">BEST FIT • ${Number(c.fit_probability || 0).toFixed(1)}%</span>` : (c.fit_probability != null ? `<span class="badge" style="background:rgba(56,189,248,0.12); color:var(--accent); font-size:9px; margin-left:5px;">${Number(c.fit_probability).toFixed(1)}% FIT</span>` : "")}</b>
                   ${budgetTag}
                 </div>
-                ${(c.fit_reasons&&c.fit_reasons.length)?`<div style="font-size:10px;color:var(--accent);margin:-2px 0 6px 0;line-height:1.25;">${c.fit_reasons.join(" • ")}</div>`:`<div style="font-size:10px;color:var(--text-dim);margin:-2px 0 6px 0;">Blocked by structural/fee gate</div>`}<div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
+                ${(c.fit_reasons&&c.fit_reasons.length)?`<div style="font-size:10px;color:var(--accent);margin:-2px 0 6px;">${c.fit_reasons.join(" • ")}</div>`:`<div style="font-size:10px;color:var(--text-dim);margin:-2px 0 6px;">Blocked by structural/fee gate</div>`}<div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
                 ${acctBreakdownHtml}
                 <div class="stat-row"><span class="stat-label">Avg Yield / Rot</span><span class="stat-val mono" style="color:var(--bull); font-weight:700;">+$${Number(c.harvest_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">($${c.min_rot_yield}–$${c.max_rot_yield})</span></span></div>
                 <div class="stat-row"><span class="stat-label">Total Side Yield</span><span class="stat-val mono" style="color:var(--bull); font-weight:800;">+$${Number(c.side_yield || 0).toFixed(2)} <span style="color:var(--text-dim); font-size:10px; font-weight:400;">(${c.side_cts || 0} ct)</span></span></div>
@@ -1617,7 +1647,7 @@ async function refreshTelemetry() {
               </div>
             </div>
           `;
-        }).join('');
+        }).join('');const sb=document.getElementById("selector-reasoning-box"),st=document.getElementById("selector-reasoning-tbody"),sm=document.getElementById("selector-diag-meta");if(sb&&st&&prop.selector_eval&&prop.selector_eval.rankings){const rk=prop.selector_eval.rankings,dg=prop.selector_eval.diagnostics||{};if(sm)sm.textContent="Fee Floor: "+(dg.dp_min_fee_floor||"--")+" pts";st.innerHTML=prop.cards.map(c=>{const r=rk[c.key]||{};return "<tr style=\"border-bottom:1px solid rgba(255,255,255,0.06);\"><td style=\"padding:4px;font-weight:600;\">"+c.title+"</td><td class=\"mono\" style=\"padding:4px;text-align:right;color:var(--accent);\">"+((r.probability||0)*100).toFixed(1)+"%</td><td class=\"mono\" style=\"padding:4px;text-align:right;\">"+(r.utility||0).toFixed(3)+"</td><td style=\"padding:4px;color:var(--text-muted);\">"+((r.reasons||[]).join(" • ")||"Blocked by gate")+"</td></tr>";}).join("");sb.style.display="block";}
       }
     } else {
       pDrawer.style.display = 'none';
@@ -1831,7 +1861,7 @@ function openAuditorModal(selectedKey) {
 
   let rungsList = [];
   let inst = tel.instrument || "NNQ";
-  const _mT={MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0}; let mult=_mT[String(inst).toUpperCase()]||0.20;
+  let mult = (inst === "MNQ") ? 2.0 : 0.20;
   const _sym = (document.getElementById("inp-instrument")?.value || "MNQ").toUpperCase(); let fee = _sym === "NNQ" ? 1.68 : (_sym === "MNQ" ? 1.86 : 1.94);
   let sideBudget = 200.0;
   let l0 = 0.0, l16 = 0.0;
@@ -2550,7 +2580,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         if not a_fits:
                             all_accounts_fit = False
                         fleet_total_side_risk += a_max_side
+                        a_mat = [{"index": i, "side": a_g[i].get("side","MID"), "role": a_g[i].get("role","MID_RANGE"), "price": round(a_g[i].get("price",0.0),2), "tp": round(a_g[i].get("tp",0.0),2), "contracts": a_g[i].get("contracts",0), "risk_dollar": round(a_g[i].get("risk_dollar",0.0),2)} for i in range(16,-1,-1) if i in a_g]
                         account_risks.append({
+                            "grid_matrix": a_mat,
                             "id": a_id,
                             "instrument": a_inst,
                             "budget": round(a_bud, 2),
