@@ -1627,7 +1627,7 @@ async function refreshTelemetry() {
             <div class="proposal-card" style="border: 1px solid ${budgetOk ? 'rgba(56,189,248,0.3)' : 'rgba(255,255,255,0.08)'};">
               <div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                  <b style="color:var(--text); font-size:12px;">${c.title} ${c.is_best_fit ? `<span class="badge badge-status-active" style="font-size:9px; margin-left:4px;">BEST FIT • ${c.fit_probability || ""}%</span>` : (c.fit_probability ? `<span class="mono" style="font-size:9.5px; color:var(--text-muted); margin-left:4px;">${c.fit_probability}%</span>` : "")}</b>
+                  <b style="color:var(--text); font-size:12px;">${c.title} ${c.is_best_fit ? `<span class="badge badge-status-active" style="font-size:9px; margin-left:5px;">BEST FIT • ${Number(c.fit_probability || 0).toFixed(1)}%</span>` : (c.fit_probability != null ? `<span class="badge" style="background:rgba(56,189,248,0.12); color:var(--accent); font-size:9px; margin-left:5px;">${Number(c.fit_probability).toFixed(1)}% FIT</span>` : "")}</b>
                   ${budgetTag}
                 </div>
                 <div class="stat-row"><span class="stat-label">Active Rungs</span><span class="stat-val mono">${c.rungs}</span></div>
