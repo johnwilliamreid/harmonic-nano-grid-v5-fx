@@ -26,8 +26,8 @@
   "IRONBEAM_DEMO": {
     "broker": "ironbeam",
     "account_id": "51428111",
-    "instrument": "MNQ",
-    "side_risk_budget": 200.0,
+    "instrument": "NNQ",
+    "side_risk_budget": 100.0,
     "max_drawdown_limit": 2000.0,
     "drawdown_type": "EOD",
     "enabled": true,

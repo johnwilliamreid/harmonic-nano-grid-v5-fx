@@ -263,14 +263,14 @@ class HarmonicGridGeometry:
             d_front_idx = max(1, min(7, int(round((f_low - self.range_low) / self.s_step))))
             d_mt_idx = max(1, min(d_front_idx - 1, int(round((mt_low - self.range_low) / self.s_step))))
 
-            # Breaker Front (Single Rung)
-            cand_f = min(raw_prices[d_front_idx] + max_snap_dist, max(raw_prices[d_front_idx] - max_snap_dist, f_low))
+            # Breaker Front (Exact Actual, capped at L8 Equilibrium in 2-sided mode)
+            cand_f = f_low if target_mapping else min(raw_prices[8] - self.tick_size, f_low)
             prices[d_front_idx] = round_entry(cand_f, "LONG", self.tick_size)
             snap_roles[d_front_idx] = "BREAKER_FRONT"
-            snap_reason[d_front_idx] = "Demand Breaker Front Edge"
+            snap_reason[d_front_idx] = "Demand Breaker Front Edge (Exact)"
 
-            # Breaker MT (Single Rung)
-            cand_mt = min(raw_prices[d_mt_idx] + max_snap_dist, max(raw_prices[d_mt_idx] - max_snap_dist, mt_low))
+            # Breaker MT (Exact Actual, strictly deeper than Front by >= 1 tick)
+            cand_mt = min(prices[d_front_idx] - self.tick_size, mt_low)
             prices[d_mt_idx] = round_entry(cand_mt, "LONG", self.tick_size)
             snap_roles[d_mt_idx] = "BREAKER_MT"
             snap_reason[d_mt_idx] = "Demand Breaker 50% MT"
@@ -300,14 +300,14 @@ class HarmonicGridGeometry:
             s_front_idx = max(9, min(15, int(round((f_high - self.range_low) / self.s_step))))
             s_mt_idx = max(s_front_idx + 1, min(15, int(round((mt_high - self.range_low) / self.s_step))))
 
-            # Breaker Front (Single Rung)
-            cand_sf = max(raw_prices[s_front_idx] - max_snap_dist, min(raw_prices[s_front_idx] + max_snap_dist, f_high))
+            # Breaker Front (Exact Actual, floored at L8 Equilibrium in 2-sided mode)
+            cand_sf = f_high if target_mapping else max(raw_prices[8] + self.tick_size, f_high)
             prices[s_front_idx] = round_entry(cand_sf, "SHORT", self.tick_size)
             snap_roles[s_front_idx] = "PREM_BREAKER_FRONT"
-            snap_reason[s_front_idx] = "Supply Breaker Front Edge"
+            snap_reason[s_front_idx] = "Supply Breaker Front Edge (Exact)"
 
-            # Breaker MT (Single Rung)
-            cand_smt = max(raw_prices[s_mt_idx] - max_snap_dist, min(raw_prices[s_mt_idx] + max_snap_dist, mt_high))
+            # Breaker MT (Exact Actual, strictly higher than Front by >= 1 tick)
+            cand_smt = max(prices[s_front_idx] + self.tick_size, mt_high)
             prices[s_mt_idx] = round_entry(cand_smt, "SHORT", self.tick_size)
             snap_roles[s_mt_idx] = "PREM_BREAKER_MT"
             snap_reason[s_mt_idx] = "Supply Breaker 50% MT"
