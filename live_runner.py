@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 
 from dashboard import start_dashboard_server, update_telemetry, set_arm_callback, set_flatten_callback, set_deploy_callback
 import dashboard
+from dashboard import _CONDITIONAL_QUEUE
+from src.core.conditional_queue import get_correlation_group
 
 from src.config import MULTIPLIERS, COMMISSION_PER_RT, TICK_SIZES
 from src.core.grid_geometry import HarmonicGridGeometry
@@ -210,8 +212,8 @@ def run_live_session(args):
     fee = COMMISSION_PER_RT.get(args.instrument, 1.68 if args.instrument == "NNQ" else 1.86)
 
     has_init_range = (args.low is not None and args.high is not None and args.high > args.low)
-    init_low = args.low if has_init_range else 27000.00
-    init_high = args.high if has_init_range else 28000.00
+    init_low = args.low if has_init_range else 1.08000
+    init_high = args.high if has_init_range else 1.08400
 
     print("=" * 70)
     print("🚀 HARMONIC NANO-GRID V5 EXECUTION RUNNER")
@@ -335,7 +337,27 @@ def run_live_session(args):
 
     # 4. Connect Broker
     broker = None
-    if args.source == "ironbeam":
+    if args.source == "ctrader":
+        try:
+            from src.adapters.ctrader_adapter import CTraderAdapter
+            broker = CTraderAdapter(is_live_exec=args.live_exec)
+            broker.set_instrument(args.instrument)
+            if not broker.connect():
+                print("[Runner] ❌ cTrader connection failed!")
+                return
+            broker.start_websocket()
+            print(f"[Runner] ✅ Connected to cTrader IC Markets (Account {broker.account_id})")
+        except Exception as e:
+            print(f"[Runner] ❌ cTrader init error: {e}")
+            return
+
+    elif args.source == "e8":
+        from src.adapters.e8_adapter import E8Adapter
+        broker = E8Adapter(is_live_exec=args.live_exec)
+        if not broker.authenticate(): return
+        broker.set_instrument(args.instrument)
+        broker.start_websocket()
+    elif args.source == "ironbeam":
         try:
             from src.adapters.ironbeam import IronbeamAdapter
             broker = IronbeamAdapter(is_live_exec=args.live_exec)
@@ -436,7 +458,7 @@ def run_live_session(args):
         print(f"\n🔄 [TELEGRAM RE-ARM] Swapping grid to: {opt['name']}")
         if broker:
             for idx, r in grid_by_idx.items():
-                if r.get("entry_boid") and r["status"] == "WORKING":
+                if r.get("entry_boid") and r["status"] == "WORKING" and abs(live_px - r["price"]) > (geom.s_step * 1.5):
                     broker.cancel_order(r["entry_boid"])
                     r["entry_boid"] = None
                     r["status"] = "IDLE"
@@ -785,8 +807,30 @@ def run_live_session(args):
                     bridge.send(f"⚠️ Error parsing risk: {e}")
             return
 
-        if cmd.startswith("/newrange") or cmd.startswith("/propose"):
-            parts = cmd.split()
+            if cmd.startswith("/watch"):
+                parts = cmd.split()
+                if len(parts) >= 5:
+                    try:
+                        kw = dict(p.split("=", 1) for p in parts[5:] if "=" in p)
+                        item = _CONDITIONAL_QUEUE.stage_watch({
+                            "symbol": parts[1].upper(), "tf": parts[2], "low": float(parts[3]), "high": float(parts[4]),
+                            "brk_low_front": float(kw["df"]) if "df" in kw else None,
+                            "brk_low_back": float(kw["db"]) if "db" in kw else None,
+                            "brk_high_front": float(kw["sf"]) if "sf" in kw else None,
+                            "brk_high_back": float(kw["sb"]) if "sb" in kw else None,
+                            "profile_key": kw.get("profile", "AUTO_V5").upper(),
+                            "risk_budget": float(kw.get("risk", 100.0)),
+                        })
+                        dashboard._TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
+                        bridge.send(f"⏳ <b>Conditional Watch Queued:</b> {item.symbol} ({item.tf}) [{item.low} - {item.high}] | {item.profile_key}")
+                    except Exception as e:
+                        bridge.send(f"⚠️ /watch error: {e}")
+                else:
+                    bridge.send("Usage: <code>/watch EURUSD 15m 1.0810 1.0865 df=1.0825 sf=1.0850</code>")
+                return
+
+            if cmd.startswith("/newrange") or cmd.startswith("/propose"):
+                parts = cmd.split()
             if len(parts) >= 3:
                 try:
                     n_low = float(parts[1])
@@ -1344,6 +1388,45 @@ def run_live_session(args):
             "grid": list(grid_by_idx.values())
             })
 
+            # Evaluate Conditional FX Watchlist Queue across all subscribed pairs
+            try:
+                _cw_syms = _CONDITIONAL_QUEUE.get_active_symbols()
+                if _cw_syms and broker and hasattr(broker, "ensure_spot_subscriptions"):
+                    broker.ensure_spot_subscriptions(_cw_syms)
+                _px_map = dict(getattr(broker, "prices_by_symbol", {}) or {})
+                if getattr(broker, "last_price", 0) and getattr(args, "instrument", ""):
+                    _px_map.setdefault(args.instrument.upper(), float(broker.last_price))
+                _slot_busy = state.get("status") in ("ACTIVE_QUOTING", "HARVEST_ONLY_FREEZE")
+                _trig_item, _cw_events = _CONDITIONAL_QUEUE.on_tick(_px_map, slot_busy=_slot_busy)
+                for _ev_msg in _cw_events:
+                    print(f"[ConditionalWatch] {_ev_msg}")
+                    dashboard.log_telegram_message("OUT", _ev_msg)
+                if _trig_item is not None and not _slot_busy:
+                    print(f"🚀 [CONDITIONAL TRIGGER] Auto-deploying {_trig_item.symbol} ({_trig_item.tf})...")
+                    _CONDITIONAL_QUEUE.on_slot_occupied(_trig_item.symbol, _trig_item.correlation_group)
+                    if hasattr(broker, "set_instrument"):
+                        broker.set_instrument(_trig_item.symbol)
+                    args.instrument = _trig_item.symbol
+                    _prop_payload = {
+                        "instrument": _trig_item.symbol, "tf": _trig_item.tf,
+                        "low": _trig_item.low, "high": _trig_item.high,
+                        "brk_low_front": _trig_item.brk_low_front, "brk_low_back": _trig_item.brk_low_back,
+                        "brk_high_front": _trig_item.brk_high_front, "brk_high_back": _trig_item.brk_high_back,
+                        "demand_mit": _trig_item.demand_mit, "supply_mit": _trig_item.supply_mit,
+                        "risk_budget": _trig_item.risk_budget, "posture": _trig_item.posture
+                    }
+                    if dashboard._ON_PROPOSE_CALLBACK:
+                        dashboard._ON_PROPOSE_CALLBACK(_prop_payload)
+                    _sel_mode = _trig_item.profile_key
+                    if _sel_mode == "AUTO_V5":
+                        _sel_mode = dashboard._TELEMETRY.get("staged_proposal", {}).get("best_fit") or "OPTION_B"
+                    if dashboard._ON_ARM_CALLBACK:
+                        dashboard._ON_ARM_CALLBACK({"mode": _sel_mode, "posture": _trig_item.posture})
+                    if dashboard._ON_DEPLOY_CALLBACK:
+                        dashboard._ON_DEPLOY_CALLBACK()
+            except Exception as _cw_err:
+                print(f"[ConditionalWatch] ⚠️ Tick check error: {_cw_err}")
+
             time.sleep(0.5)
 
     except KeyboardInterrupt:
@@ -1370,7 +1453,7 @@ def main():
     parser.add_argument("--high", type=float, default=None, help="Container Range High (optional, can stage via UI/TG)")
     parser.add_argument("--risk", type=float, default=1200.0, help="Total Side Risk Budget in USD")
     parser.add_argument("--tf", type=str, default="15m", help="Container Timeframe (4h, 1h, 15m, 4m, 1m)")
-    parser.add_argument("--source", type=str, default="ironbeam", choices=["ironbeam", "paper"], help="Data/Execution engine")
+    parser.add_argument("--source", type=str, default="ironbeam", choices=["ctrader", "e8", "hyperliquid", "ironbeam", "paper"], help="Data/Execution engine")
     parser.add_argument("--live-exec", action="store_true", help="Arm live real-money execution on CME")
     parser.add_argument("--wait-arm", action="store_true", help="Wait for explicit Telegram arm tap before quoting")
     parser.add_argument("--brk-low-front", type=float, default=None, help="Long breaker front edge")

@@ -2452,6 +2452,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
             self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "watch": item.to_dict()}).encode()); return
+        elif self.path == "/api/conditional/update_profile":
+            ok = _CONDITIONAL_QUEUE.update_profile(str(data.get("trigger_id", "")), str(data.get("profile_key", "AUTO_V5")))
+            _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
         elif self.path == "/api/conditional/cancel":
             ok = _CONDITIONAL_QUEUE.cancel_watch(str(data.get("trigger_id", "")))
             _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
