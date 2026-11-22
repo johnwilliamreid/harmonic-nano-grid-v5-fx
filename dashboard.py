@@ -1,3 +1,5 @@
+from src.core.conditional_queue import ConditionalWatchlistRegistry
+_CONDITIONAL_QUEUE = ConditionalWatchlistRegistry()
 import math
 import json
 import os
@@ -202,12 +204,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #07090e;
-    --surface: rgba(17, 23, 34, 0.78);
-    --surface-elevated: rgba(24, 32, 48, 0.88);
-    --surface-hover: rgba(36, 48, 72, 0.55);
+    --bg: #04100b;
+    --surface: rgba(8, 28, 20, 0.84);
+    --surface-elevated: rgba(12, 40, 29, 0.92);
+    --surface-hover: rgba(18, 56, 41, 0.65);
     --border: rgba(255, 255, 255, 0.08);
-    --border-bright: rgba(56, 189, 248, 0.35);
+    --border-bright: rgba(16, 185, 129, 0.45);
     --text: #f1f5f9;
     --text-muted: #94a3b8;
     --text-dim: #64748b;
@@ -215,8 +217,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --bull-glow: rgba(16, 185, 129, 0.25);
     --bear: #f43f5e;
     --bear-glow: rgba(244, 63, 94, 0.25);
-    --accent: #38bdf8;
-    --accent-glow: rgba(56, 189, 248, 0.25);
+    --accent: #eab308;
+    --accent-glow: rgba(234, 179, 8, 0.28);
     --warn: #f59e0b;
     --purple: #a855f7;
   }
@@ -441,7 +443,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     width: 6px;
     border-radius: 3px;
     background: #ffffff;
-    box-shadow: 0 0 10px #38bdf8, 0 0 4px #fff;
+    box-shadow: 0 0 10px #10b981, 0 0 4px #fff;
     transition: left 0.15s ease-out;
     z-index: 2;
   }
@@ -604,7 +606,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 1px 6px;
     margin-left: 6px;
     border-radius: 4px;
-    background: #38bdf8;
+    background: #10b981;
     color: #000;
     font-size: 10px;
     font-weight: 800;
@@ -631,7 +633,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div>
     <div class="brand-title">
       <div class="brand-dot"></div>
-      <span>HARMONIC NANO-GRID V5</span>
+      <span>HARMONIC FX SOVEREIGN DESK V5</span>
       <span style="font-weight: 400; color: var(--text-muted);">| Structural Cockpit HUD</span>
     </div>
     <div style="color: var(--text-muted); font-size: 11px; margin-top: 3px;" class="mono">
@@ -643,8 +645,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
   <div style="display: flex; gap: 8px; align-items: center;">
     <div style="display:flex; align-items:center; background:rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:6px; padding:2px;">
-      <button id="toggle-nnq" class="btn" style="padding:4px 8px; font-size:11px; background:var(--warn); color:#000;" onclick="switchActiveInstrument('NNQ')">NNQ</button>
-      <button id="toggle-mnq" class="btn" style="padding:4px 8px; font-size:11px; background:transparent; color:var(--text-muted);" onclick="switchActiveInstrument('MNQ')">MNQ</button>
+      <button id="toggle-nnq" class="btn" style="padding:4px 8px; font-size:11px; background:var(--warn); color:#000;" onclick="switchActiveInstrument('EURUSD')">EURUSD</button>
+      <button id="toggle-mnq" class="btn" style="padding:4px 8px; font-size:11px; background:transparent; color:var(--text-muted);" onclick="switchActiveInstrument('XAUUSD')">XAUUSD</button>
     </div>
     <button class="btn btn-primary" onclick="toggleRangeForm()">📐 ENTER NEW RANGE</button>
     <button id="btn-deploy" class="btn btn-deploy" style="display:none;" onclick="submitDeploy()">⚡ DEPLOY GRID</button>
@@ -696,23 +698,38 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="form-field">
       <label>ASSET</label>
       <select id="inp-instrument" onchange="saveFormValues(); recalcSpecDetails();">
-        <optgroup label="CME Micros &amp; Nanos">
-          <option value="MNQ">MNQ ($2.00/pt &bull; $1.86 RT)</option>
-          <option value="NNQ">NNQ ($0.20/pt &bull; $1.68 RT)</option>
-          <option value="MES">MES ($5.00/pt &bull; $1.94 RT)</option>
-          <option value="M2K">M2K ($5.00/pt &bull; $1.94 RT)</option>
-          <option value="MYM">MYM ($0.50/pt &bull; $1.94 RT)</option>
-          <option value="MGC">MGC ($10.00/pt &bull; $1.94 RT)</option>
-          <option value="MCL">MCL ($100.00/pt &bull; $1.94 RT)</option>
-        </optgroup>
-        <optgroup label="CME Standard Contracts">
-          <option value="NQ">NQ ($20.00/pt &bull; $4.54 RT)</option>
-          <option value="ES">ES ($50.00/pt &bull; $4.54 RT)</option>
-          <option value="RTY">RTY ($50.00/pt &bull; $4.54 RT)</option>
-          <option value="YM">YM ($5.00/pt &bull; $4.54 RT)</option>
-          <option value="GC">GC ($100.00/pt &bull; $4.54 RT)</option>
-          <option value="CL">CL ($1,000.00/pt &bull; $4.54 RT)</option>
-        </optgroup>
+                <option value="EURUSD" selected>EURUSD ($10/pip)</option>
+        <option value="GBPUSD">GBPUSD ($10/pip)</option>
+        <option value="AUDUSD">AUDUSD ($10/pip)</option>
+        <option value="NZDUSD">NZDUSD ($10/pip)</option>
+        <option value="USDJPY">USDJPY (~$6.50/pip)</option>
+        <option value="USDCAD">USDCAD (~$7.00/pip)</option>
+        <option value="USDCHF">USDCHF (~$11.35/pip)</option>
+        <option value="EURGBP">EURGBP (~$12.70/pip)</option>
+        <option value="EURJPY">EURJPY (~$6.50/pip)</option>
+        <option value="EURAUD">EURAUD (~$6.50/pip)</option>
+        <option value="EURNZD">EURNZD (~$5.90/pip)</option>
+        <option value="EURCAD">EURCAD (~$7.00/pip)</option>
+        <option value="EURCHF">EURCHF (~$11.35/pip)</option>
+        <option value="GBPJPY">GBPJPY (~$6.50/pip)</option>
+        <option value="GBPAUD">GBPAUD (~$6.50/pip)</option>
+        <option value="GBPNZD">GBPNZD (~$5.90/pip)</option>
+        <option value="GBPCAD">GBPCAD (~$7.00/pip)</option>
+        <option value="GBPCHF">GBPCHF (~$11.35/pip)</option>
+        <option value="AUDJPY">AUDJPY (~$6.50/pip)</option>
+        <option value="AUDNZD">AUDNZD (~$5.90/pip)</option>
+        <option value="AUDCAD">AUDCAD (~$7.00/pip)</option>
+        <option value="AUDCHF">AUDCHF (~$11.35/pip)</option>
+        <option value="NZDJPY">NZDJPY (~$6.50/pip)</option>
+        <option value="NZDCAD">NZDCAD (~$7.00/pip)</option>
+        <option value="NZDCHF">NZDCHF (~$11.35/pip)</option>
+        <option value="CADJPY">CADJPY (~$6.50/pip)</option>
+        <option value="CADCHF">CADCHF (~$11.35/pip)</option>
+        <option value="CHFJPY">CHFJPY (~$6.50/pip)</option>
+        <option value="XAUUSD">XAUUSD ($100/pt)</option>
+        <option value="XAGUSD">XAGUSD ($5,000/pt)</option>
+        <option value="USTEC">USTEC ($1/pt)</option>
+        <option value="US500">US500 ($1/pt)</option>
       </select>
     </div>
     <div class="form-field">
@@ -1056,7 +1073,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <script>
 let stagedCardsCache = [];
 
-function snapTick(val) {
+function pxDec(sym) {
+  sym = (sym || window._LAST_TELEMETRY?.instrument || document.getElementById("inp-instrument")?.value || "EURUSD").toUpperCase();
+  if (["XAUUSD","XAGUSD","USTEC","US500","MNQ","NNQ","MES"].includes(sym)) return 2;
+  return sym.includes("JPY") ? 3 : 5;
+}
+function pxTick(sym) { const dec = pxDec(sym); return dec === 5 ? 0.00001 : (dec === 3 ? 0.001 : 0.01); }
+function snapTick(val) { const t = pxTick(); return (Math.round(val / t) * t).toFixed(pxDec()); }
+function _unusedSnap(val) {
   return (Math.round(val * 4.0) / 4.0).toFixed(2);
 }
 
@@ -1069,11 +1093,11 @@ function switchActiveInstrument(sym) {
 }
 
 function recalcSpecDetails() {
-  const sym = document.getElementById('inp-instrument')?.value || 'NNQ';
+  const sym = document.getElementById('inp-instrument')?.value || 'EURUSD';
   const bNNQ = document.getElementById('toggle-nnq');
   const bMNQ = document.getElementById('toggle-mnq');
   if (bNNQ && bMNQ) {
-    if (sym === 'NNQ') {
+    if (sym === 'EURUSD') {
       bNNQ.style.background = 'var(--warn)';
       bNNQ.style.color = '#000';
       bMNQ.style.background = 'transparent';
@@ -1103,7 +1127,7 @@ function toggleRangeForm() {
 function saveFormValues() {
   try {
     const vals = {
-      instrument: document.getElementById('inp-instrument')?.value || 'NNQ',
+      instrument: document.getElementById('inp-instrument')?.value || 'EURUSD',
       low: document.getElementById('inp-low')?.value || '',
       high: document.getElementById('inp-high')?.value || '',
       tf: document.getElementById('inp-tf')?.value || '4H',
@@ -1168,7 +1192,7 @@ function autoFillBreakers() {
 
 async function submitNewRange() {
   saveFormValues();
-  const instrument = document.getElementById('inp-instrument')?.value || 'NNQ';
+  const instrument = document.getElementById('inp-instrument')?.value || 'EURUSD';
   const low = parseFloat(document.getElementById('inp-low').value);
   const high = parseFloat(document.getElementById('inp-high').value);
   const tf = document.getElementById('inp-tf').value;
@@ -1303,8 +1327,8 @@ function showGridPreview(key) {
     const sideColor = r.side === 'LONG' ? 'var(--bull)' : (r.side === 'SHORT' ? 'var(--bear)' : 'var(--text-muted)');
     const action = r.side === 'LONG' ? 'BUY (BID)' : (r.side === 'SHORT' ? 'SELL (ASK)' : 'EQUILIBRIUM');
     const status = isActive ? '<span class="status-tag st-active">ARMED</span>' : '<span style="color:var(--text-dim);">STANDBY</span>';
-    const priceStr = r.price ? Number(r.price).toFixed(2) : '--';
-    const tpStr = r.tp ? Number(r.tp).toFixed(2) : '--';
+    const priceStr = r.price ? Number(r.price).toFixed(pxDec()) : '--';
+    const tpStr = r.tp ? Number(r.tp).toFixed(pxDec()) : '--';
     const riskStr = r.risk_dollar && r.risk_dollar > 0 ? `$${Number(r.risk_dollar).toFixed(2)}` : '--';
     const qtyStr = isActive ? `<b style="color:var(--warn); font-weight:800;">${qty} ct</b>` : '<span style="color:var(--text-dim);">-</span>';
 
@@ -1526,19 +1550,38 @@ function updateFleetTable(accounts) {
             style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.18); border-radius:4px; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; padding:2px 4px; outline:none; cursor:pointer;"
             title="Switch execution asset for this account"
             onchange="submitAccountInstrument('${a.id}', this.value)">
-            <option value="MNQ" ${ (a.instrument || "MNQ") === "MNQ" ? "selected" : "" }>MNQ ($2.00/pt)</option>
-            <option value="NNQ" ${ (a.instrument || "MNQ") === "NNQ" ? "selected" : "" }>NNQ ($0.20/pt)</option>
-            <option value="MES" ${ (a.instrument || "MNQ") === "MES" ? "selected" : "" }>MES ($5.00/pt)</option>
-            <option value="M2K" ${ (a.instrument || "MNQ") === "M2K" ? "selected" : "" }>M2K ($5.00/pt)</option>
-            <option value="MYM" ${ (a.instrument || "MNQ") === "MYM" ? "selected" : "" }>MYM ($0.50/pt)</option>
-            <option value="MGC" ${ (a.instrument || "MNQ") === "MGC" ? "selected" : "" }>MGC ($10.00/pt)</option>
-            <option value="MCL" ${ (a.instrument || "MNQ") === "MCL" ? "selected" : "" }>MCL ($100.00/pt)</option>
-            <option value="NQ" ${ (a.instrument || "MNQ") === "NQ" ? "selected" : "" }>NQ ($20.00/pt)</option>
-            <option value="ES" ${ (a.instrument || "MNQ") === "ES" ? "selected" : "" }>ES ($50.00/pt)</option>
-            <option value="RTY" ${ (a.instrument || "MNQ") === "RTY" ? "selected" : "" }>RTY ($50.00/pt)</option>
-            <option value="YM" ${ (a.instrument || "MNQ") === "YM" ? "selected" : "" }>YM ($5.00/pt)</option>
-            <option value="GC" ${ (a.instrument || "MNQ") === "GC" ? "selected" : "" }>GC ($100.00/pt)</option>
-            <option value="CL" ${ (a.instrument || "MNQ") === "CL" ? "selected" : "" }>CL ($1000.00/pt)</option>
+                        <option value="EURUSD" ${ (a.instrument || "EURUSD") === "EURUSD" ? "selected" : "" }>EURUSD ($10/pip)</option>
+            <option value="GBPUSD" ${ (a.instrument || "EURUSD") === "GBPUSD" ? "selected" : "" }>GBPUSD ($10/pip)</option>
+            <option value="AUDUSD" ${ (a.instrument || "EURUSD") === "AUDUSD" ? "selected" : "" }>AUDUSD ($10/pip)</option>
+            <option value="NZDUSD" ${ (a.instrument || "EURUSD") === "NZDUSD" ? "selected" : "" }>NZDUSD ($10/pip)</option>
+            <option value="USDJPY" ${ (a.instrument || "EURUSD") === "USDJPY" ? "selected" : "" }>USDJPY (~$6.50/pip)</option>
+            <option value="USDCAD" ${ (a.instrument || "EURUSD") === "USDCAD" ? "selected" : "" }>USDCAD (~$7.00/pip)</option>
+            <option value="USDCHF" ${ (a.instrument || "EURUSD") === "USDCHF" ? "selected" : "" }>USDCHF (~$11.35/pip)</option>
+            <option value="EURGBP" ${ (a.instrument || "EURUSD") === "EURGBP" ? "selected" : "" }>EURGBP (~$12.70/pip)</option>
+            <option value="EURJPY" ${ (a.instrument || "EURUSD") === "EURJPY" ? "selected" : "" }>EURJPY (~$6.50/pip)</option>
+            <option value="EURAUD" ${ (a.instrument || "EURUSD") === "EURAUD" ? "selected" : "" }>EURAUD (~$6.50/pip)</option>
+            <option value="EURNZD" ${ (a.instrument || "EURUSD") === "EURNZD" ? "selected" : "" }>EURNZD (~$5.90/pip)</option>
+            <option value="EURCAD" ${ (a.instrument || "EURUSD") === "EURCAD" ? "selected" : "" }>EURCAD (~$7.00/pip)</option>
+            <option value="EURCHF" ${ (a.instrument || "EURUSD") === "EURCHF" ? "selected" : "" }>EURCHF (~$11.35/pip)</option>
+            <option value="GBPJPY" ${ (a.instrument || "EURUSD") === "GBPJPY" ? "selected" : "" }>GBPJPY (~$6.50/pip)</option>
+            <option value="GBPAUD" ${ (a.instrument || "EURUSD") === "GBPAUD" ? "selected" : "" }>GBPAUD (~$6.50/pip)</option>
+            <option value="GBPNZD" ${ (a.instrument || "EURUSD") === "GBPNZD" ? "selected" : "" }>GBPNZD (~$5.90/pip)</option>
+            <option value="GBPCAD" ${ (a.instrument || "EURUSD") === "GBPCAD" ? "selected" : "" }>GBPCAD (~$7.00/pip)</option>
+            <option value="GBPCHF" ${ (a.instrument || "EURUSD") === "GBPCHF" ? "selected" : "" }>GBPCHF (~$11.35/pip)</option>
+            <option value="AUDJPY" ${ (a.instrument || "EURUSD") === "AUDJPY" ? "selected" : "" }>AUDJPY (~$6.50/pip)</option>
+            <option value="AUDNZD" ${ (a.instrument || "EURUSD") === "AUDNZD" ? "selected" : "" }>AUDNZD (~$5.90/pip)</option>
+            <option value="AUDCAD" ${ (a.instrument || "EURUSD") === "AUDCAD" ? "selected" : "" }>AUDCAD (~$7.00/pip)</option>
+            <option value="AUDCHF" ${ (a.instrument || "EURUSD") === "AUDCHF" ? "selected" : "" }>AUDCHF (~$11.35/pip)</option>
+            <option value="NZDJPY" ${ (a.instrument || "EURUSD") === "NZDJPY" ? "selected" : "" }>NZDJPY (~$6.50/pip)</option>
+            <option value="NZDCAD" ${ (a.instrument || "EURUSD") === "NZDCAD" ? "selected" : "" }>NZDCAD (~$7.00/pip)</option>
+            <option value="NZDCHF" ${ (a.instrument || "EURUSD") === "NZDCHF" ? "selected" : "" }>NZDCHF (~$11.35/pip)</option>
+            <option value="CADJPY" ${ (a.instrument || "EURUSD") === "CADJPY" ? "selected" : "" }>CADJPY (~$6.50/pip)</option>
+            <option value="CADCHF" ${ (a.instrument || "EURUSD") === "CADCHF" ? "selected" : "" }>CADCHF (~$11.35/pip)</option>
+            <option value="CHFJPY" ${ (a.instrument || "EURUSD") === "CHFJPY" ? "selected" : "" }>CHFJPY (~$6.50/pip)</option>
+            <option value="XAUUSD" ${ (a.instrument || "EURUSD") === "XAUUSD" ? "selected" : "" }>XAUUSD ($100/pt)</option>
+            <option value="XAGUSD" ${ (a.instrument || "EURUSD") === "XAGUSD" ? "selected" : "" }>XAGUSD ($5,000/pt)</option>
+            <option value="USTEC" ${ (a.instrument || "EURUSD") === "USTEC" ? "selected" : "" }>USTEC ($1/pt)</option>
+            <option value="US500" ${ (a.instrument || "EURUSD") === "US500" ? "selected" : "" }>US500 ($1/pt)</option>
           </select>
         </td>
         <td class="mono" style="padding:6px 8px; text-align:right;">
@@ -1668,10 +1711,10 @@ async function refreshTelemetry() {
     const sStep = d.container?.s_step || 1;
     const liveP = d.live_price || 0;
 
-    document.getElementById('hdr-asset').textContent = d.instrument || 'NNQ';
-    document.getElementById('hdr-container').textContent = `${low.toFixed(2)} — ${high.toFixed(2)}`;
-    document.getElementById('hdr-span').textContent = (d.container?.delta_p || 0).toFixed(2);
-    document.getElementById('hdr-eq').textContent = pEq.toFixed(2);
+    document.getElementById('hdr-asset').textContent = d.instrument || 'EURUSD';
+    document.getElementById('hdr-container').textContent = `${low.toFixed(pxDec(d.instrument))} — ${high.toFixed(pxDec(d.instrument))}`;
+    document.getElementById('hdr-span').textContent = (d.container?.delta_p || 0).toFixed(pxDec(d.instrument));
+    document.getElementById('hdr-eq').textContent = pEq.toFixed(pxDec(d.instrument));
     document.getElementById('val-account').textContent = `Account: ${d.account} (${d.venue})`;
 
     const vBadge = document.getElementById('badge-venue');
@@ -1679,7 +1722,7 @@ async function refreshTelemetry() {
     vBadge.className = 'badge ' + (d.venue && d.venue.includes('LIVE') ? 'badge-live' : 'badge-demo');
 
     if (liveP > 0) {
-      document.getElementById('val-hero-price').textContent = liveP.toFixed(2);
+      document.getElementById('val-hero-price').textContent = liveP.toFixed(pxDec(d.instrument));
       const deltaEq = liveP - pEq;
       const sdVal = (d.container?.delta_p > 0) ? (deltaEq / (d.container.delta_p / 4.0)) : 0;
       const harmonicRung = 8.0 + (deltaEq / sStep);
@@ -1703,7 +1746,7 @@ async function refreshTelemetry() {
       else shelfElem.textContent = 'Upper Invalidation (L16)';
     }
 
-    document.getElementById('val-step-size').textContent = `${sStep.toFixed(2)} pts`;
+    document.getElementById('val-step-size').textContent = `${sStep.toFixed(pxDec(d.instrument))} pts`;
 
     if (d.lifecycle) {
       document.getElementById('val-tf').textContent = `${(d.lifecycle.tf || '4H').toUpperCase()} TIER`;
@@ -1821,9 +1864,9 @@ async function refreshTelemetry() {
         <td class="mono" style="font-weight:700; color:var(--text);">L${r.index}</td>
         <td style="color:${sideColor}; font-weight:700;">${r.side}</td>
         <td><b>${r.role}</b> ${snapBadge} ${probingTag}</td>
-        <td class="mono" style="text-align:right; font-weight:700;">${r.price.toFixed(2)}</td>
+        <td class="mono" style="text-align:right; font-weight:700;">${r.price.toFixed(pxDec())}</td>
         <td class="mono" style="text-align:right; color:var(--accent);">${deltaStr}</td>
-        <td class="mono" style="text-align:right;">${r.tp.toFixed(2)}</td>
+        <td class="mono" style="text-align:right;">${r.tp.toFixed(pxDec())}</td>
         <td class="mono" style="text-align:center;">${qtyStr}</td>
         <td class="mono" style="text-align:right; color:var(--bear); font-weight:600;">${riskStr}</td>
         <td class="mono" style="text-align:right; color:var(--bull); font-weight:600;">${rewStr}</td>
@@ -1860,7 +1903,7 @@ function openAuditorModal(selectedKey) {
   const bias = tel.bias || {};
 
   let rungsList = [];
-  let inst = tel.instrument || "NNQ";
+  let inst = tel.instrument || "EURUSD";
   let mult = (inst === "MNQ") ? 2.0 : 0.20;
   const _sym = (document.getElementById("inp-instrument")?.value || "MNQ").toUpperCase(); let fee = _sym === "NNQ" ? 1.68 : (_sym === "MNQ" ? 1.86 : 1.94);
   let sideBudget = 200.0;
@@ -2025,7 +2068,7 @@ function openAuditorModal(selectedKey) {
         </select>
       </div>
       <div style="font-size:11px; color:#8b949e;">
-        Stop Buffer: <b>±1 Step (${sStep.toFixed(2)} pt)</b>
+        Stop Buffer: <b>±1 Step (${sStep.toFixed(pxDec(d.instrument))} pt)</b>
       </div>
     </div>
 
@@ -2137,6 +2180,7 @@ function openAuditorModal(selectedKey) {
   </div>
 </div>
 
+<script src="/conditional.js"></script>
 </body>
 </html>
 """
@@ -2144,7 +2188,7 @@ function openAuditorModal(selectedKey) {
 _TELEMETRY: Dict[str, Any] = {
     "venue": "DEMO",
     "account": "51428111",
-    "instrument": "NNQ",
+    "instrument": "EURUSD",
     "live_price": 0.0,
     "position": 0,
     "realized_pnl": 0.0,
@@ -2372,8 +2416,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 _TELEMETRY["container"] = {
                     "low": geom.range_low,
                     "high": geom.range_high,
-                    "delta_p": round(geom.range_high - geom.range_low, 2),
-                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 2),
+                    "delta_p": round(geom.range_high - geom.range_low, 5),
+                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 5),
                     "s_step": geom.s_step,
                     "s_harvest": geom.s_harvest
                 }
@@ -2403,7 +2447,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": True, "armed_mode": mode}).encode("utf-8"))
             return
 
-        if self.path == "/api/propose_range":
+        if self.path == "/api/conditional/stage":
+            item = _CONDITIONAL_QUEUE.stage_watch(data)
+            _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "watch": item.to_dict()}).encode()); return
+        elif self.path == "/api/conditional/cancel":
+            ok = _CONDITIONAL_QUEUE.cancel_watch(str(data.get("trigger_id", "")))
+            _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+        elif self.path == "/api/conditional/force_arm":
+            tid = str(data.get("trigger_id", ""))
+            with _CONDITIONAL_QUEUE._lock:
+                w = _CONDITIONAL_QUEUE.watches.pop(tid, None)
+                if w: w.status = "DEPLOYED"; _CONDITIONAL_QUEUE._save_item(w)
+            _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
+            if w and _ON_PROPOSE_CALLBACK:
+                _ON_PROPOSE_CALLBACK({"instrument": w.symbol, "tf": w.tf, "low": w.low, "high": w.high, "brk_low_front": w.brk_low_front, "brk_low_back": w.brk_low_back, "brk_high_front": w.brk_high_front, "brk_high_back": w.brk_high_back, "demand_mit": w.demand_mit, "supply_mit": w.supply_mit, "risk_budget": w.risk_budget, "posture": w.posture})
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": bool(w)}).encode()); return
+        elif self.path == "/api/propose_range":
             all_accts = _TELEMETRY.get("accounts", []) or []
             active_accts = [a for a in all_accts if str(a.get("status", "")).upper() == "HEALTHY"]
 
@@ -2678,7 +2742,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path == "/conditional.js":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.end_headers()
+            self.wfile.write(open("static_conditional.js", "rb").read())
+            return
+
         if self.path == "/api/telemetry":
+            _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
