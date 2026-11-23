@@ -1,3 +1,14 @@
+def _tick_decimals(tick_size: float) -> int:
+    try:
+        t = float(tick_size)
+        if t > 0 and t < 1.0:
+            import math
+            return max(2, min(8, -int(math.floor(math.log10(t) + 1e-12))))
+    except Exception:
+        pass
+    return 2
+
+from src.config import TICK_SIZES, LOT_STEPS, MIN_QTYS, HL_PERP_SPECS, IC_FX_SPECS
 import math
 from typing import Dict, Any, List, Optional
 from src.config import TICK_SIZES
@@ -6,15 +17,19 @@ def round_to_tick(price: float, tick_size: float = 0.25) -> float:
     if tick_size <= 0:
         return price
     ticks = round(price / tick_size)
-    return round(ticks * tick_size, 4)
+    dec = _tick_decimals(tick_size)
+    return round(ticks * tick_size, dec)
 
 def round_entry(price: float, side: str, tick_size: float = 0.25) -> float:
     ticks = price / tick_size
     if side == "LONG":
-        return round(math.floor(ticks + 1e-9) * tick_size, 4)
+        dec = _tick_decimals(tick_size)
+        return round(math.floor(ticks + 1e-9) * tick_size, dec)
     elif side == "SHORT":
-        return round(math.ceil(ticks - 1e-9) * tick_size, 4)
-    return round(round(ticks) * tick_size, 4)
+        dec = _tick_decimals(tick_size)
+        return round(math.ceil(ticks - 1e-9) * tick_size, dec)
+    dec = _tick_decimals(tick_size)
+    return round(round(ticks) * tick_size, dec)
 
 class HarmonicGridGeometry:
     ROLES = {
@@ -345,7 +360,16 @@ class HarmonicGridGeometry:
 
         grid = {}
         for idx in range(17):
-            side = "LONG" if idx < 8 else ("SHORT" if idx > 8 else "MID")
+            if idx < 8:
+                side = "LONG"
+            elif idx > 8:
+                side = "SHORT"
+            elif idx in active_discount_rungs:
+                side = "LONG"
+            elif idx in active_premium_rungs:
+                side = "SHORT"
+            else:
+                side = "MID"
             is_active = (idx in active_discount_rungs) if side == "LONG" else ((idx in active_premium_rungs) if side == "SHORT" else False)
 
             role = snap_roles.get(idx, f"MID_RANGE ({idx / 16.0:.4f})")
@@ -415,7 +439,8 @@ class HarmonicGridGeometry:
 
             if cap > 0 and k_i > 0:
                 exact_qty = r_target / k_i
-                contracts = max(1, round(exact_qty))
+                is_p = ("HL_PERP" in self.instrument or "-USD" in self.instrument or (self.instrument in HL_PERP_SPECS or self.instrument in IC_FX_SPECS))
+                contracts = max(0.01, round(exact_qty, 2)) if is_p else max(1, round(exact_qty))
                 realized_risk = round(contracts * k_i, 2)
             else:
                 exact_qty = 0.0
@@ -464,10 +489,11 @@ class HarmonicGridGeometry:
 
             # Step 1: If initial rounded contracts exceed budget, trim from highest-risk rung down
             current_risk = sum(grid[idx]["contracts"] * grid[idx]["k_i"] for idx in active_rungs)
-            while current_risk > self.r_side_budget and any(grid[idx]["contracts"] > 1 for idx in active_rungs):
-                candidates = [idx for idx in active_rungs if grid[idx]["contracts"] > 1]
+            step_q = 0.01 if ("HL_PERP" in self.instrument or "-USD" in self.instrument or (self.instrument in HL_PERP_SPECS or self.instrument in IC_FX_SPECS)) else 1
+            while current_risk > self.r_side_budget and any(grid[idx]["contracts"] > step_q for idx in active_rungs):
+                candidates = [idx for idx in active_rungs if grid[idx]["contracts"] > step_q]
                 idx_to_trim = max(candidates, key=lambda i: grid[i]["k_i"])
-                grid[idx_to_trim]["contracts"] -= 1
+                grid[idx_to_trim]["contracts"] = round(grid[idx_to_trim]["contracts"] - step_q, 2)
                 current_risk = sum(grid[idx]["contracts"] * grid[idx]["k_i"] for idx in active_rungs)
 
             # Step 2: Utilize unused budget cash by adding contracts where unit risk k_i is lowest
@@ -477,7 +503,7 @@ class HarmonicGridGeometry:
                 if not eligible:
                     break
                 best_idx = min(eligible, key=lambda i: grid[i]["k_i"])
-                grid[best_idx]["contracts"] += 1
+                grid[best_idx]["contracts"] = round(grid[best_idx]["contracts"] + step_q, 2)
                 rem_budget -= grid[best_idx]["k_i"]
 
             # Step 3: Recompute final dollar values
@@ -668,16 +694,19 @@ class HarmonicGridGeometry:
                         weights.append(1.0)
                 sum_w = sum(weights)
                 budget_shares = [(w / sum_w) * self.r_side_budget for w in weights]
-                ladder_qty = [max(1, round(b_share / k)) for b_share, k in zip(budget_shares, k_weights_disc)]
+                is_f = (self.instrument in IC_FX_SPECS or self.instrument in HL_PERP_SPECS)
+                ladder_qty = [max(0.01, round(b_share / k, 2)) if is_f else max(1, round(b_share / k)) for b_share, k in zip(budget_shares, k_weights_disc)]
             else:
-                ladder_qty = [max(1, round(r_target / k)) for k in k_weights_disc]
+                is_f = (self.instrument in IC_FX_SPECS or self.instrument in HL_PERP_SPECS)
+                ladder_qty = [max(0.01, round(r_target / k, 2)) if is_f else max(1, round(r_target / k)) for k in k_weights_disc]
 
             total_catastrophic_risk = sum(q * k for q, k in zip(ladder_qty, k_weights_disc))
-            while total_catastrophic_risk > self.r_side_budget and any(q > 1 for q in ladder_qty):
+            sq = 0.01 if (self.instrument in IC_FX_SPECS or self.instrument in HL_PERP_SPECS) else 1
+            while total_catastrophic_risk > self.r_side_budget and any(q > sq for q in ladder_qty):
                 # When trimming, trim from lowest weight/efficiency rungs first instead of automatically starving middle rungs
-                candidates = [i for i, q in enumerate(ladder_qty) if q > 1]
+                candidates = [i for i, q in enumerate(ladder_qty) if q > sq]
                 idx_to_trim = min(candidates, key=lambda i: (1.0 / k_weights_disc[i]))
-                ladder_qty[idx_to_trim] -= 1
+                ladder_qty[idx_to_trim] = round(ladder_qty[idx_to_trim] - sq, 2)
                 total_catastrophic_risk = sum(q * k for q, k in zip(ladder_qty, k_weights_disc))
 
             level_rules_long = []

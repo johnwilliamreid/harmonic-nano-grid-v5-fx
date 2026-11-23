@@ -10,7 +10,7 @@ from datetime import datetime
 
 from src.core.grid_geometry import HarmonicGridGeometry, round_to_tick
 from src.core.directional_bias import DirectionalBiasCalculator
-from src.config import MULTIPLIERS, COMMISSION_PER_RT
+from src.config import MULTIPLIERS, COMMISSION_PER_RT, resolve_fee_per_unit
 
 _PENDING_GEOM: Optional[HarmonicGridGeometry] = None
 _PENDING_PROPOSAL: Optional[Dict[str, Any]] = None
@@ -1636,14 +1636,14 @@ async function refreshTelemetry() {
 
       pDrawer.style.display = 'block';
       document.getElementById('prop-tf-badge').textContent = `${prop.tf} Tier`;
-      document.getElementById('prop-draft-badge').textContent = `Draft: ${(prop.draft_low || 0).toFixed(2)} — ${(prop.draft_high || 0).toFixed(2)} (${(prop.draft_span || 0).toFixed(2)} pts)`;
+      document.getElementById('prop-draft-badge').textContent = `Draft: ${(prop.draft_low || 0).toFixed(pxDec(prop.instrument || d.instrument))} — ${(prop.draft_high || 0).toFixed(pxDec(prop.instrument || d.instrument))} (${(prop.draft_span || 0).toFixed(2)} pts)`;
 
       const tpPtsEl = document.getElementById('prop-tp-pts');
       const tpDlrEl = document.getElementById('prop-tp-dlr');
       const feeDlrEl = document.getElementById('prop-fee-dlr');
       const dragBadge = document.getElementById('prop-drag-badge');
 
-      if (tpPtsEl) tpPtsEl.textContent = `${(prop.tp_pts || 0).toFixed(2)} pts`;
+      if (tpPtsEl) tpPtsEl.textContent = `${(prop.tp_pts || 0).toFixed(pxDec(prop.instrument || d.instrument))} pts`;
       if (tpDlrEl) tpDlrEl.textContent = `$${(prop.tp_dlr || 0).toFixed(2)}`;
       if (feeDlrEl) feeDlrEl.textContent = `$${(prop.fee_per_rt || 1.86).toFixed(2)}`;
 
@@ -1788,7 +1788,7 @@ async function refreshTelemetry() {
     document.getElementById('val-formation-asym').textContent = `${form > 0 ? '+' : ''}${Number(form).toFixed(2)}`;
     document.getElementById('val-structural-integ').textContent = `${integ > 0 ? '+' : ''}${Number(integ).toFixed(2)}`;
     document.getElementById('val-touch-reaction').textContent = `${touch > 0 ? '+' : ''}${Number(touch).toFixed(2)}`;
-    document.getElementById('val-price-dispersion').textContent = `${disp > 0 ? '+' : ''}${Number(disp).toFixed(2)}`;
+    document.getElementById('val-price-dispersion').textContent = `${disp > 0 ? '+' : ''}${Number(disp).toFixed(pxDec(d.instrument))}`;
 
     document.getElementById('val-net-pos').textContent = d.position;
     document.getElementById('val-orders').textContent = d.active_orders;
@@ -2019,7 +2019,7 @@ function openAuditorModal(selectedKey) {
         <td>${r.role || ""}${snapBadge}</td>
         <td>${px.toFixed(2)}</td>
         <td>${stopPx.toFixed(2)}</td>
-        <td>${distPts.toFixed(2)} pt</td>
+        <td>${distPts.toFixed(pxDec(window._LAST_TELEMETRY?.instrument))} pt</td>
         <td>$${unitRisk.toFixed(2)}</td>
         <td style="font-weight:700; color:${disarmed ? "#8b949e" : (actCt > 0 ? "var(--warn)" : "#fff")};">${ctDisplay}</td>
         <td style="font-weight:700; color:${allocRisk > 0 ? "var(--bear)" : "#8b949e"};">$${allocRisk.toFixed(2)}</td>
@@ -2636,7 +2636,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         a_inst = acct.get("instrument", instrument)
                         a_bud = float(acct.get("budget") or acct.get("side_risk_budget") or risk)
                         a_mult = MULTIPLIERS.get(a_inst, 2.0 if a_inst == "MNQ" else 0.2)
-                        a_fee = COMMISSION_PER_RT.get(a_inst, 1.68 if a_inst == "NNQ" else 1.86)
+                        a_fee = resolve_fee_per_unit(a_inst, (low + high) / 2.0 if 'low' in locals() and 'high' in locals() else 0.0)
                         a_geom = HarmonicGridGeometry(
                             range_low=low, range_high=high, resolution=16,
                             multiplier=a_mult, fee_per_rt=a_fee,

@@ -2,7 +2,7 @@ try:
     from src.adapters.hyperliquid_adapter import HyperliquidAdapter
 except Exception:
     HyperliquidAdapter = None
-from src.config import HL_PERP_SPECS
+from src.config import HL_PERP_SPECS, IC_FX_SPECS
 import time
 import json
 import os
@@ -47,6 +47,15 @@ class MultiAccountDispatcher:
                     account_id=cfg.get("account_id", acct_id),
                     is_live_exec=False
                 )
+            elif broker_type == "e8":
+                from src.adapters.e8_adapter import E8Adapter
+                adapter = E8Adapter(is_live_exec=bool(cfg.get("is_live_exec", False)))
+            elif broker_type == "ctrader":
+                from src.adapters.ctrader_adapter import CTraderAdapter
+                adapter = CTraderAdapter(
+                    account_id=cfg.get("account_id", ""),
+                    is_live_exec=bool(cfg.get("is_live_exec", False))
+                )
             elif broker_type == "ironbeam":
                 adapter = IronbeamAdapter(is_live_exec=False)
 
@@ -83,23 +92,72 @@ class MultiAccountDispatcher:
 
             # 2. Construct account-specific order ID
             ts = int(time.time())
-            oid = f"{acct_id}_{inst}_L{intent.rung_idx}_{ts}"
+            oid = intent.metadata.get("oid") or f"{acct_id}_{inst}_L{intent.rung_idx}_{ts}"
             tif = intent.metadata.get("tif", "GTC")
             reduce_only = intent.metadata.get("reduce_only", False)
 
+            _tp = intent.tp_price if getattr(intent, "tp_price", None) else intent.metadata.get("tp")
+            _sl = intent.sl_price if getattr(intent, "sl_price", None) else intent.metadata.get("sl")
             try:
                 if intent.intent_type in ("QUOTE_ENTRY", "TP_HARVEST"):
-                    boid = adapter.place_limit_order(
-                        oid=oid,
-                        side=intent.side,
-                        price=intent.price,
-                        size=qty,
-                        instrument=inst,
-                        tif=tif
-                    )
+                    try:
+                        boid = adapter.place_limit_order(
+                            oid=oid,
+                            side=intent.side,
+                            price=intent.price,
+                            size=qty,
+                            instrument=inst,
+                            tif=tif,
+                            reduce_only=reduce_only,
+                            tp=_tp,
+                            sl=_sl
+                        )
+                    except TypeError:
+                        try:
+                            boid = adapter.place_limit_order(
+                                oid=oid,
+                                side=intent.side,
+                                price=intent.price,
+                                size=qty,
+                                instrument=inst,
+                                tif=tif,
+                                reduce_only=reduce_only
+                            )
+                        except TypeError:
+                            boid = adapter.place_limit_order(
+                                oid=oid,
+                                side=intent.side,
+                                price=intent.price,
+                                size=qty,
+                                instrument=inst,
+                                tif=tif
+                            )
                     results[acct_id] = boid
                     if boid:
                         acct["active_orders"][intent.rung_idx] = boid
+
+                elif intent.intent_type == "SL_STOP":
+                    if hasattr(adapter, "place_stop_order"):
+                        boid = adapter.place_stop_order(
+                            oid=oid,
+                            side=intent.side,
+                            price=intent.price,
+                            size=qty,
+                            instrument=inst,
+                            tif=tif
+                        )
+                    else:
+                        boid = adapter.place_limit_order(
+                            oid=oid,
+                            side=intent.side,
+                            price=intent.price,
+                            size=qty,
+                            instrument=inst,
+                            tif=tif
+                        )
+                    results[acct_id] = boid
+                    if boid:
+                        acct["active_orders"][f"SL_{intent.rung_idx}"] = boid
 
                 elif intent.intent_type == "SL_STOP":
                     if hasattr(adapter, "place_stop_order"):
@@ -137,8 +195,13 @@ class MultiAccountDispatcher:
 
         return results
 
-    def _calculate_size(self, intent: OrderIntent, cfg: Dict[str, Any], inst: str) -> int:
-        """Dynamic integer sizing using the account risk budget."""
+    def _calculate_size(self, intent: OrderIntent, cfg: Dict[str, Any], inst: str):
+        """Match dashboard/geometry rung sizing directly when intent.size is provided."""
+        is_frac = (inst in IC_FX_SPECS or inst in HL_PERP_SPECS or "-USD" in inst)
+        if intent.size is not None and float(intent.size) > 0:
+            val = float(intent.size)
+            return max(0.01, round(val, 2)) if is_frac else max(1, int(round(val)))
+
         side_budget = float(cfg.get("side_risk_budget", 500.0))
         mult = float(MULTIPLIERS.get(inst, 2.0))
         fee = float(COMMISSION_PER_RT.get(inst, 1.68 if inst == "NNQ" else 1.86))
@@ -149,9 +212,9 @@ class MultiAccountDispatcher:
             unit_risk = (dist * mult) + fee
             if unit_risk > 0:
                 raw_qty = (side_budget * weight) / unit_risk
-                return max(1, int(round(raw_qty)))
+                return max(0.01, round(raw_qty, 2)) if is_frac else max(1, int(round(raw_qty)))
 
-        return max(1, int(round(intent.size)))
+        return 0.01 if is_frac else 1
 
     def cancel_all_fleet(self):
         """Parallel cancel sweep across all registered venues."""

@@ -16,7 +16,7 @@ import dashboard
 from dashboard import _CONDITIONAL_QUEUE
 from src.core.conditional_queue import get_correlation_group
 
-from src.config import MULTIPLIERS, COMMISSION_PER_RT, TICK_SIZES
+from src.config import MULTIPLIERS, COMMISSION_PER_RT, resolve_fee_per_unit, TICK_SIZES
 from src.core.grid_geometry import HarmonicGridGeometry
 from src.core.data_engine import GridDataEngine
 from src.core.directional_bias import DirectionalBiasCalculator
@@ -95,6 +95,8 @@ def format_hms(seconds: float) -> str:
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 def derive_asymmetric_rungs(geom, low, high, brk_low_front, brk_low_back, brk_high_front, brk_high_back):
+    if getattr(geom, "s_step", 0.0) is None or float(getattr(geom, "s_step", 0.0)) <= 0:
+        return {}
     f_low_px = brk_low_front or (low + 0.3125 * (high - low))
     b_low_px = brk_low_back or low
     f_high_px = brk_high_front or (high - 0.3125 * (high - low))
@@ -151,6 +153,8 @@ def dispatch_order_intent(intent: OrderIntent, broker) -> Optional[str]:
     if intent.intent_type in ("QUOTE_ENTRY", "TP_HARVEST"):
         reduce_only = intent.metadata.get("reduce_only", False)
         oid = intent.metadata.get("oid") or f"{intent.intent_type}_{inst}_L{intent.rung_idx}_{int(time.time())}"
+        _tp = intent.metadata.get("tp")
+        _sl = intent.metadata.get("sl")
         try:
             return broker.place_limit_order(
                 oid=oid,
@@ -159,18 +163,30 @@ def dispatch_order_intent(intent: OrderIntent, broker) -> Optional[str]:
                 size=intent.size,
                 reduce_only=reduce_only,
                 instrument=inst,
-                tif=tif
+                tif=tif,
+                tp=_tp,
+                sl=_sl
             )
         except TypeError:
-            # Fallback if adapter does not support reduce_only kwarg
-            return broker.place_limit_order(
-                oid=oid,
-                side=intent.side,
-                price=intent.price,
-                size=intent.size,
-                instrument=inst,
-                tif=tif
-            )
+            try:
+                return broker.place_limit_order(
+                    oid=oid,
+                    side=intent.side,
+                    price=intent.price,
+                    size=intent.size,
+                    reduce_only=reduce_only,
+                    instrument=inst,
+                    tif=tif
+                )
+            except TypeError:
+                return broker.place_limit_order(
+                    oid=oid,
+                    side=intent.side,
+                    price=intent.price,
+                    size=intent.size,
+                    instrument=inst,
+                    tif=tif
+                )
 
     elif intent.intent_type == "SL_STOP":
         oid = intent.metadata.get("oid") or f"SL_{inst}_L{intent.rung_idx}_{int(time.time())}"
@@ -406,15 +422,36 @@ def run_live_session(args):
     active_brackets = {}
 
     def get_fresh_market_price() -> float:
+        target_sym = str(args.instrument or "").upper()
+        candidates = []
         if broker:
-            if hasattr(broker, "last_price") and broker.last_price is not None and broker.last_price > 0:
-                return broker.last_price
-            if hasattr(broker, "_ref_price"):
-                ref = broker._ref_price(args.instrument)
-                if ref and ref > 0:
-                    broker.last_price = ref
-                    return ref
-        return state["last_price"]
+            candidates.append(broker)
+        if fleet_dispatcher and getattr(fleet_dispatcher, "accounts", None):
+            for acct in fleet_dispatcher.accounts.values():
+                cfg = acct.get("config") or {}
+                adp = acct.get("adapter")
+                if adp and str(cfg.get("instrument", "")).upper() == target_sym:
+                    candidates.append(adp)
+            for acct in fleet_dispatcher.accounts.values():
+                adp = acct.get("adapter")
+                if adp and adp not in candidates:
+                    candidates.append(adp)
+
+        for adp in candidates:
+            p_map = getattr(adp, "prices_by_symbol", None) or {}
+            sym_px = p_map.get(target_sym)
+            if sym_px is not None and float(sym_px) > 0:
+                px_val = float(sym_px)
+                state["last_price"] = px_val
+                return px_val
+            lp_val = getattr(adp, "last_price", None)
+            if lp_val is not None and float(lp_val) > 0:
+                px_val = float(lp_val)
+                state["last_price"] = px_val
+                return px_val
+
+        st_px = state.get("last_price")
+        return float(st_px) if st_px is not None and float(st_px) > 0 else 0.0
 
     def is_order_strictly_passive(side: str, price: float, market_price: float) -> bool:
         if market_price <= 0:
@@ -639,7 +676,7 @@ def run_live_session(args):
             print(f"⚡ [DASHBOARD ARM] Grid PRE-ARMED in STANDBY with posture={posture}. Awaiting Deploy.")
             try:
                 s_uid = f"SESSION_{args.instrument}_{int(time.time())}"
-                _adv_meta = cmd.get("advisory") if isinstance(cmd, dict) else None
+                _adv_meta = data.get("advisory") if isinstance(data, dict) else None
                 data_engine.start_session(
                     session_uid=s_uid,
                     geom=geom,
@@ -783,9 +820,16 @@ def run_live_session(args):
         if cmd.startswith("/flatten") or cmd.startswith("/panic") or cmd.startswith("panic:flatten"):
             state["status"] = "FLATTENED"
             state["flatten"] = True
-            if broker:
-                broker.cancel_all()
-                broker.flatten_position(instrument=args.instrument)
+            _cmd_f = broker or fleet_dispatcher
+            if _cmd_f:
+                try:
+                    _cmd_f.cancel_all()
+                except Exception:
+                    pass
+                if hasattr(_cmd_f, 'flatten_all_fleet'):
+                    _cmd_f.flatten_all_fleet()
+                elif hasattr(_cmd_f, 'flatten_position'):
+                    _cmd_f.flatten_position(instrument=args.instrument)
             bridge.send(
                 "🚨 <b>EMERGENCY FLATTEN EXECUTED</b>\n"
                 "• All working limit orders cancelled.\n"
@@ -881,11 +925,24 @@ def run_live_session(args):
                 state["status"] = "FLATTENED"
                 state["paused"] = True
                 print("\n🚨 [PANIC EXECUTION] Executing full cancellation & market liquidation on main thread...")
-                if broker:
-                    print("[Ironbeam] 🧹 Canceling all resting limit orders...")
-                    broker.cancel_all(verbose=True)
-                    if hasattr(broker, "flatten_position"):
-                        broker.flatten_position(instrument=args.instrument)
+                _f_target = broker or fleet_dispatcher
+                if _f_target:
+                    print(f"[{getattr(_f_target, 'exec_venue', 'Fleet/Broker')}] 🧹 Canceling all resting limit orders...")
+                    try:
+                        if hasattr(_f_target, "cancel_all"):
+                            try:
+                                _f_target.cancel_all(verbose=True)
+                            except TypeError:
+                                _f_target.cancel_all()
+                    except Exception as e:
+                        print(f"[Flatten] ⚠️ cancel_all error: {e}")
+                    try:
+                        if hasattr(_f_target, "flatten_all_fleet"):
+                            _f_target.flatten_all_fleet()
+                        elif hasattr(_f_target, "flatten_position"):
+                            _f_target.flatten_position(instrument=args.instrument)
+                    except Exception as e:
+                        print(f"[Flatten] ⚠️ flatten error: {e}")
                 
                 pnl_sym = "+" if state["realized_pnl"] >= 0 else ""
                 cur_pos = broker.get_position() if (broker and hasattr(broker, "get_position")) else 0
@@ -904,9 +961,21 @@ def run_live_session(args):
                 except Exception as e:
                     print(f"[Telegram] Failed to send flatten alert: {e}")
 
+                active_brackets.clear()
+                active_brackets.clear()
                 for idx, r in grid_by_idx.items():
                     r["status"] = "FLATTENED"
                     r["entry_boid"] = None
+                    r["tp_boid"] = None
+                    r["sl_boid"] = None
+                    r["fill_price"] = None
+                    r["fill_qty"] = 0
+                    r["floating_pnl"] = 0.0
+                    r["tp_boid"] = None
+                    r["sl_boid"] = None
+                    r["fill_price"] = None
+                    r["fill_qty"] = 0
+                    r["floating_pnl"] = 0.0
 
             elapsed = now - t_start
             rem_freeze = max(0, freeze_at - elapsed)
@@ -963,9 +1032,10 @@ def run_live_session(args):
             live_px = get_fresh_market_price()
             state["last_price"] = live_px
 
-            if broker:
-                state["active_orders"] = len(broker.active) if hasattr(broker, "active") else 0
-                state["position"] = broker.get_position() if hasattr(broker, "get_position") else getattr(broker, "position", 0)
+            _acct_src = broker or (next(iter(fleet_dispatcher.accounts.values()))["adapter"] if (fleet_dispatcher and fleet_dispatcher.accounts) else None)
+            if _acct_src:
+                state["active_orders"] = len(_acct_src.active) if hasattr(_acct_src, "active") else (sum(len(a.get("active_orders", {})) for a in fleet_dispatcher.accounts.values()) if fleet_dispatcher else 0)
+                state["position"] = _acct_src.get_position() if hasattr(_acct_src, "get_position") else getattr(_acct_src, "position", 0)
 
             total_floating_pnl = 0.0
             for idx, r in grid_by_idx.items():
@@ -1066,8 +1136,12 @@ def run_live_session(args):
                 prior_price_vs_eq = cur_vs_eq
 
             # 3. Process Inbound Fills
-            if broker and hasattr(broker, "drain_fills"):
-                fills = broker.drain_fills()
+            _fill_src = broker
+            if not _fill_src and fleet_dispatcher and getattr(fleet_dispatcher, "accounts", None):
+                first_acct = next(iter(fleet_dispatcher.accounts.values()), {})
+                _fill_src = first_acct.get("adapter")
+            if _fill_src and hasattr(_fill_src, "drain_fills"):
+                fills = _fill_src.drain_fills()
                 for fl in fills:
                     oid = fl.get("order_id", "")
                     fill_side = fl.get("side", "")
@@ -1084,34 +1158,50 @@ def run_live_session(args):
                                 r["status"] = "FILLED_IN_POSITION"
                                 r["entry_boid"] = None
                                 r["fill_price"] = fill_px if fill_px > 0 else r["price"]
+                                if not fill_qty or float(fill_qty) <= 0:
+                                    fill_qty = float(r.get("contracts") or 0.01)
                                 r["fill_qty"] = fill_qty
 
                                 bracket_side = "SELL" if r["side"] == "LONG" else "BUY"
                                 ts = int(time.time())
-
                                 tp_oid = f"TP_{args.instrument}_L{idx}_{ts}"
-                                tp_intent = OrderIntent(
-                                    intent_type="TP_HARVEST",
-                                    rung_idx=idx,
-                                    side=bracket_side,
-                                    price=r["tp"],
-                                    size=fill_qty,
-                                    instrument=args.instrument,
-                                    metadata={"oid": tp_oid, "reduce_only": True, "tif": "GTC"}
-                                )
-                                tp_boid = dispatch_order_intent(tp_intent, broker)
-
                                 sl_oid = f"SL_{args.instrument}_L{idx}_{ts}"
-                                sl_intent = OrderIntent(
-                                    intent_type="SL_STOP",
-                                    rung_idx=idx,
-                                    side=bracket_side,
-                                    price=r["sl"],
-                                    size=fill_qty,
-                                    instrument=args.instrument,
-                                    metadata={"oid": sl_oid, "tif": "GTC"}
-                                )
-                                sl_boid = dispatch_order_intent(sl_intent, broker)
+
+                                # Check if venue uses native position-attached TP/SL (e.g. cTrader)
+                                _uses_native_bracket = False
+                                if fleet_dispatcher:
+                                    _uses_native_bracket = any(
+                                        "CTRADER" in getattr(a.get("adapter"), "exec_venue", "")
+                                        for a in fleet_dispatcher.accounts.values()
+                                    )
+                                elif broker and "CTRADER" in getattr(broker, "exec_venue", ""):
+                                    _uses_native_bracket = True
+
+                                if _uses_native_bracket:
+                                    tp_boid = f"NATIVE_TP_{tp_oid}"
+                                    sl_boid = f"NATIVE_SL_{sl_oid}"
+                                else:
+                                    tp_intent = OrderIntent(
+                                        intent_type="TP_HARVEST",
+                                        rung_idx=idx,
+                                        side=bracket_side,
+                                        price=r["tp"],
+                                        size=fill_qty,
+                                        instrument=args.instrument,
+                                        metadata={"oid": tp_oid, "reduce_only": True, "tif": "GTC"}
+                                    )
+                                    tp_boid = dispatch_order_intent(tp_intent, exec_target)
+
+                                    sl_intent = OrderIntent(
+                                        intent_type="SL_STOP",
+                                        rung_idx=idx,
+                                        side=bracket_side,
+                                        price=r["sl"],
+                                        size=fill_qty,
+                                        instrument=args.instrument,
+                                        metadata={"oid": sl_oid, "tif": "GTC"}
+                                    )
+                                    sl_boid = dispatch_order_intent(sl_intent, exec_target)
 
                                 r["tp_boid"] = tp_boid
                                 r["sl_boid"] = sl_boid
@@ -1168,7 +1258,11 @@ def run_live_session(args):
                                 brk = active_brackets.pop(idx)
                                 if brk.get("sl_boid"):
                                     print(f"🧹 [OCO] Canceling paired stop {brk['sl_boid']} for L{idx}")
-                                    broker.cancel_order(brk["sl_boid"])
+                                    if broker:
+                                        broker.cancel_order(brk["sl_boid"])
+                                    elif fleet_dispatcher:
+                                        for _a in fleet_dispatcher.accounts.values():
+                                            _a["adapter"].cancel_order(brk["sl_oid"])
 
                                 r["rotations"] += 1
                                 r["tp_boid"] = None
@@ -1215,7 +1309,11 @@ def run_live_session(args):
                                 brk = active_brackets.pop(idx)
                                 if brk.get("tp_boid"):
                                     print(f"🧹 [OCO] Canceling paired TP {brk['tp_boid']} for L{idx}")
-                                    broker.cancel_order(brk["tp_boid"])
+                                    if broker:
+                                        broker.cancel_order(brk["tp_boid"])
+                                    elif fleet_dispatcher:
+                                        for _a in fleet_dispatcher.accounts.values():
+                                            _a["adapter"].cancel_order(brk["tp_oid"])
 
                                 r["tp_boid"] = None
                                 r["sl_boid"] = None
@@ -1256,7 +1354,8 @@ def run_live_session(args):
                             print(f"[Runner] ❌ Error handling SL fill {oid}: {e}")
 
             # 4. Passive Order Dispatch & Retracement Quoting
-            if broker and state["status"] == "ACTIVE_QUOTING" and live_px > 0:
+            exec_target = broker or fleet_dispatcher
+            if exec_target and state["status"] == "ACTIVE_QUOTING" and live_px > 0:
                 directive = bias_data.get("directive", "TWO_SIDED_BALANCED")
                 current_posture = state.get("posture", "DIRECTIVE")
 
@@ -1269,6 +1368,8 @@ def run_live_session(args):
 
                     # Posture and directive rules
                     if current_posture == "DIRECTIVE":
+                        if r.get("side") not in ("LONG", "SHORT") or (r.get("index") == 8 and r.get("side") == "MID"):
+                            continue
                         if "DISARM_SHORTS" in directive and r["side"] == "SHORT":
                             r["status"] = "DISARMED_BIAS"
                             continue
@@ -1301,7 +1402,7 @@ def run_live_session(args):
                             metadata={"oid": oid, "tif": "GTC"}
                         )
                         try:
-                            boid = dispatch_order_intent(entry_intent, broker)
+                            boid = dispatch_order_intent(entry_intent, exec_target)
                             if boid:
                                 r["entry_boid"] = boid
                                 r["status"] = "WORKING"
@@ -1357,8 +1458,8 @@ def run_live_session(args):
                 "unrealized_pnl": state["unrealized_pnl"],
                 "container": {
                     "low": geom.range_low, "high": geom.range_high,
-                    "delta_p": geom.range_high - geom.range_low,
-                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 2),
+                    "delta_p": round(geom.range_high - geom.range_low, 5),
+                    "p_eq": round((geom.range_low + geom.range_high) / 2.0, 5),
                     "s_step": geom.s_step, "s_harvest": geom.s_harvest
                 },
                 "bias": {
