@@ -18,3 +18,8 @@ env/
 *.log
 .DS_Store
 data/
+accounts.json
+data/*.db
+data/*.db-wal
+data/*.db-shm
+*.pyc
