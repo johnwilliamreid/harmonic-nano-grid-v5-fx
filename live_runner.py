@@ -1472,7 +1472,7 @@ def run_live_session(args):
                     pass
 
             update_telemetry({
-                "venue": getattr(broker, "exec_venue", "PAPER DEMO") if broker else "PAPER DEMO",
+                "venue": getattr(broker, "exec_venue", None) or ((fleet_dispatcher.get_fleet_telemetry() or [{}])[0].get("venue") if "fleet_dispatcher" in locals() and fleet_dispatcher else "PAPER DEMO"),
                 "account": getattr(broker, "account_id", "51428111") if broker else "51428111",
                 "instrument": args.instrument,
                 "live_price": state["last_price"],
@@ -1513,12 +1513,29 @@ def run_live_session(args):
             "grid": list(grid_by_idx.values())
             })
 
-            # Evaluate Conditional FX Watchlist Queue across all subscribed pairs
+            # Evaluate Conditional FX Watchlist Queue across all subscribed pairs (broker + fleet adapters)
             try:
                 _cw_syms = _CONDITIONAL_QUEUE.get_active_symbols()
-                if _cw_syms and broker and hasattr(broker, "ensure_spot_subscriptions"):
-                    broker.ensure_spot_subscriptions(_cw_syms)
-                _px_map = dict(getattr(broker, "prices_by_symbol", {}) or {})
+                _adps = []
+                if broker:
+                    _adps.append(broker)
+                if "fleet_dispatcher" in locals() and fleet_dispatcher and getattr(fleet_dispatcher, "accounts", None):
+                    for _fa in fleet_dispatcher.accounts.values():
+                        _a = _fa.get("adapter")
+                        if _a and _a not in _adps:
+                            _adps.append(_a)
+                _px_map = {}
+                for _a in _adps:
+                    if _cw_syms and hasattr(_a, "ensure_spot_subscriptions"):
+                        _a.ensure_spot_subscriptions(_cw_syms)
+                    _pm = getattr(_a, "prices_by_symbol", None) or {}
+                    for _k, _v in _pm.items():
+                        if _v and float(_v) > 0:
+                            _px_map[_k.upper()] = float(_v)
+                    _cs = str(getattr(_a, "current_symbol", "") or "").upper()
+                    _lp = getattr(_a, "last_price", None)
+                    if _cs and _lp and float(_lp) > 0:
+                        _px_map.setdefault(_cs, float(_lp))
                 if getattr(broker, "last_price", 0) and getattr(args, "instrument", ""):
                     _px_map.setdefault(args.instrument.upper(), float(broker.last_price))
                 _slot_busy = state.get("status") in ("ACTIVE_QUOTING", "HARVEST_ONLY_FREEZE")
@@ -1526,7 +1543,7 @@ def run_live_session(args):
                 for _ev_msg in _cw_events:
                     print(f"[ConditionalWatch] {_ev_msg}")
                     dashboard.log_telegram_message("OUT", _ev_msg)
-                    if bridge: bridge.send(_ev_msg)
+                    if bridge: bridge.send(_ev_msg.replace(" < ", " &lt; ").replace(" > ", " &gt; "))
                 if _trig_item is not None and not _slot_busy:
                     print(f"🚀 [CONDITIONAL TRIGGER] Auto-deploying {_trig_item.symbol} ({_trig_item.tf})...")
                     _CONDITIONAL_QUEUE.on_slot_occupied(_trig_item.symbol, _trig_item.correlation_group)

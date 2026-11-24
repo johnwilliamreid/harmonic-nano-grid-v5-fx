@@ -846,6 +846,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <span>MT INTACT: <b id="adv-s-mt" style="color:var(--accent);">--%</b></span>
     </div>
   </div>
+  <div id="overnight-safety-strip" style="display:none; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin:0 0 12px 0; padding:8px 14px; background:rgba(15, 23, 42, 0.85); border:1px solid var(--border); border-radius:8px; font-size:11.5px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span id="ov-score-badge" class="badge" style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:800; padding:3px 9px;">OVERNIGHT: --/100</span>
+      <span id="ov-carry-alert" style="color:var(--text-muted);">--</span>
+    </div>
+    <div class="mono" style="display:flex; flex-wrap:wrap; gap:12px; font-size:11px; color:var(--text);">
+      <span>SWAP MULT: <b id="ov-swap-mult" style="color:var(--accent);">1x</b></span>
+      <span>1-RUNG CARRY: <b id="ov-1r-carry">L $0 / S $0</b></span>
+      <span>FULL-SIDE: <b id="ov-full-carry">L $0 / S $0</b></span>
+    </div>
+  </div>
 
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
     <div style="display:flex; align-items:center; gap:8px;">
@@ -1641,6 +1652,31 @@ async function refreshTelemetry() {
         document.getElementById('adv-s-brk').textContent  = `${Number(adv.s_brk_fit || 0).toFixed(0)}%`;
         document.getElementById('adv-s-sym').textContent  = `${Number(adv.s_symmetry || 0).toFixed(0)}%`;
         document.getElementById('adv-s-mt').textContent   = `${Number(adv.s_mt || 0).toFixed(0)}%`;
+      }
+      const ov = prop.overnight;
+      const ovStrip = document.getElementById('overnight-safety-strip');
+      if (ov && ovStrip) {
+        ovStrip.style.display = 'flex';
+        const osc = Number(ov.overnight_score || 0);
+        const ocol = osc >= 80 ? 'var(--bull)' : (osc >= 60 ? 'var(--warn)' : 'var(--bear)');
+        const obg  = osc >= 80 ? 'rgba(16,185,129,0.16)' : (osc >= 60 ? 'rgba(245,158,11,0.16)' : 'rgba(244,63,94,0.16)');
+        const obadge = document.getElementById('ov-score-badge');
+        obadge.textContent = `OVERNIGHT SAFETY: ${osc.toFixed(1)}/100 • ${ov.tier || ''}`;
+        obadge.style.color = ocol;
+        obadge.style.background = obg;
+        const ce = ov.carry_economics || {};
+        document.getElementById('ov-carry-alert').textContent = ce.carry_alert || '';
+        const sm = ce.swap_multiplier || 1;
+        const smEl = document.getElementById('ov-swap-mult');
+        smEl.textContent = sm === 3 ? `3x (${ce.triple_swap_day_name || 'WED'})` : '1x';
+        smEl.style.color = sm === 3 ? 'var(--warn)' : 'var(--accent)';
+        const r1 = ce.one_rung_swap_usd || {LONG:0, SHORT:0};
+        const rf = ce.full_side_swap_usd || {LONG:0, SHORT:0};
+        const fmtS = v => (v >= 0 ? `+$${Number(v).toFixed(2)}` : `-$${Math.abs(Number(v)).toFixed(2)}`);
+        document.getElementById('ov-1r-carry').textContent = `L ${fmtS(r1.LONG)} / S ${fmtS(r1.SHORT)}`;
+        document.getElementById('ov-full-carry').textContent = `L ${fmtS(rf.LONG)} / S ${fmtS(rf.SHORT)}`;
+      } else if (ovStrip) {
+        ovStrip.style.display = 'none';
       }
 
       pDrawer.style.display = 'block';
@@ -2477,8 +2513,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 w = _CONDITIONAL_QUEUE.watches.pop(tid, None)
                 if w: w.status = "DEPLOYED"; _CONDITIONAL_QUEUE._save_item(w)
             _TELEMETRY["conditional_watches"] = _CONDITIONAL_QUEUE.list_watches()
-            if w and _ON_PROPOSE_CALLBACK:
-                _ON_PROPOSE_CALLBACK({"instrument": w.symbol, "tf": w.tf, "low": w.low, "high": w.high, "brk_low_front": w.brk_low_front, "brk_low_back": w.brk_low_back, "brk_high_front": w.brk_high_front, "brk_high_back": w.brk_high_back, "demand_mit": w.demand_mit, "supply_mit": w.supply_mit, "risk_budget": w.risk_budget, "posture": w.posture})
+            if w:
+                setup_payload = {"instrument": w.symbol, "tf": w.tf, "low": w.low, "high": w.high, "brk_low_front": w.brk_low_front, "brk_low_back": w.brk_low_back, "brk_high_front": w.brk_high_front, "brk_high_back": w.brk_high_back, "demand_mit": ("MT_MITIGATED" if getattr(w, "mt_mitigated", False) else getattr(w, "demand_mit", "FRESH")), "supply_mit": ("MT_MITIGATED" if getattr(w, "mt_mitigated", False) else getattr(w, "supply_mit", "FRESH")), "risk": getattr(w, "risk_budget", 100.0), "risk_budget": getattr(w, "risk_budget", 100.0), "posture": getattr(w, "posture", "TWO_SIDED_BALANCED")}
+                _TELEMETRY["pending_setup"] = setup_payload
+                if _ON_PROPOSE_CALLBACK:
+                    _ON_PROPOSE_CALLBACK(setup_payload)
+                chosen_mode = str(getattr(w, "profile_key", "SNAPPED") or "SNAPPED").upper()
+                if chosen_mode == "AUTO_V5":
+                    chosen_mode = (_TELEMETRY.get("staged_proposal", {}).get("selector_eval", {}).get("best_fit")) or "SNAPPED"
+                if _ON_ARM_CALLBACK:
+                    _ON_ARM_CALLBACK({"mode": chosen_mode, "posture": setup_payload["posture"]})
             self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
             self.wfile.write(json.dumps({"ok": bool(w)}).encode()); return
         elif self.path == "/api/propose_range":
@@ -2739,6 +2783,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "advisory": _adv,
                 "cards": calc_cards
             }
+            try:
+                from datetime import datetime, timezone, timedelta
+                from src.core.overnight_safety import evaluate_4h_overnight_package
+                _now_ict = datetime.now(timezone(timedelta(hours=7)))
+                _ref_c = calc_cards[0] if calc_cards else {}
+                _ref_m = _ref_c.get("grid_matrix") or []
+                _l_lots = sum(float(r.get("contracts", 0)) for r in _ref_m if r.get("side") == "LONG") or 0.10
+                _s_lots = sum(float(r.get("contracts", 0)) for r in _ref_m if r.get("side") == "SHORT") or 0.10
+                _n_act = max(1, sum(1 for r in _ref_m if r.get("side") == "LONG" and float(r.get("contracts", 0)) > 0))
+                _posture = str(data.get("posture") or "BALANCED").upper()
+                _TELEMETRY["staged_proposal"]["overnight"] = evaluate_4h_overnight_package(
+                    symbol=instrument,
+                    range_low=low,
+                    range_high=high,
+                    current_price=_cur_px,
+                    posture=_posture,
+                    mt_score=float(_adv.get("s_mt", 100.0)),
+                    now_ict=_now_ict,
+                    long_lots_total=_l_lots,
+                    short_lots_total=_s_lots,
+                    active_rungs_per_side=_n_act,
+                    multiplier=mult,
+                    fee_per_rt_per_lot=fee,
+                )
+            except Exception as _ov_err:
+                _TELEMETRY["staged_proposal"]["overnight_error"] = str(_ov_err)
 
             from src.core.profile_selector import apply_selector
             apply_selector(instrument, low, high, df, db, sf, sb, data, _TELEMETRY, calc_cards)
