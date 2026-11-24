@@ -2,7 +2,7 @@ try:
     from src.adapters.hyperliquid_adapter import HyperliquidAdapter
 except Exception:
     HyperliquidAdapter = None
-from src.config import HL_PERP_SPECS, IC_FX_SPECS
+from src.config import HL_PERP_SPECS, IC_FX_SPECS, LOT_STEPS, MIN_QTYS
 import time
 import json
 import os
@@ -200,7 +200,7 @@ class MultiAccountDispatcher:
         is_frac = (inst in IC_FX_SPECS or inst in HL_PERP_SPECS or "-USD" in inst)
         if intent.size is not None and float(intent.size) > 0:
             val = float(intent.size)
-            return max(0.01, round(val, 2)) if is_frac else max(1, int(round(val)))
+            st = float(LOT_STEPS.get(inst, 0.01)); mn = float(MIN_QTYS.get(inst, 0.01)); return max(mn, round(round(val / st) * st, 2)) if is_frac else max(1, int(round(val)))
 
         side_budget = float(cfg.get("side_risk_budget", 500.0))
         mult = float(MULTIPLIERS.get(inst, 2.0))
@@ -212,7 +212,7 @@ class MultiAccountDispatcher:
             unit_risk = (dist * mult) + fee
             if unit_risk > 0:
                 raw_qty = (side_budget * weight) / unit_risk
-                return max(0.01, round(raw_qty, 2)) if is_frac else max(1, int(round(raw_qty)))
+                st = float(LOT_STEPS.get(inst, 0.01)); mn = float(MIN_QTYS.get(inst, 0.01)); return max(mn, round(round(raw_qty / st) * st, 2)) if is_frac else max(1, int(round(raw_qty)))
 
         return 0.01 if is_frac else 1
 
@@ -306,6 +306,12 @@ class MultiAccountDispatcher:
 
         new_inst = str(new_instrument).strip().upper()
         acct["config"]["instrument"] = new_inst
+        adp = acct.get("adapter")
+        if adp and hasattr(adp, "set_instrument"):
+            try:
+                adp.set_instrument(new_inst)
+            except Exception as e:
+                print(f"[Dispatcher] ⚠️ set_instrument({new_inst}) err on {acct_id}: {e}")
         print(f"[Dispatcher] 🎯 Instrument for {acct_id} updated to {new_inst}")
 
         try:

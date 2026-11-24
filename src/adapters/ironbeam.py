@@ -769,6 +769,11 @@ class IronbeamAdapter(BaseBrokerAdapter):
             if self._current_bar is None or self._current_bar["ts"] != now:
                 if self._current_bar is not None:
                     self.bar_queue.put(self._current_bar.copy())
+                    try:
+                        from src.regime_bridge import push_closed_bar
+                        push_closed_bar(self._current_bar)
+                    except Exception:
+                        pass
                 self._current_bar = {
                     "ts": now, "open": price, "high": price, "low": price, "close": price
                 }

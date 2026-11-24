@@ -219,7 +219,19 @@ def run_live_session(args):
                 set_fleet_flatten_callback(fleet_dispatcher.flatten_all_fleet)
                 set_account_action_callback(fleet_dispatcher.account_action)
                 set_account_budget_callback(fleet_dispatcher.update_account_budget)
-                set_account_instrument_callback(fleet_dispatcher.update_account_instrument)
+                def _on_inst_changed(acct_id, new_inst):
+                    ok = fleet_dispatcher.update_account_instrument(acct_id, new_inst)
+                    if ok and new_inst:
+                        sym_u = str(new_inst).strip().upper()
+                        args.instrument = sym_u
+                        state["last_price"] = 0.0
+                        if broker and hasattr(broker, "set_instrument"):
+                            try:
+                                broker.set_instrument(sym_u)
+                            except Exception:
+                                pass
+                    return ok
+                set_account_instrument_callback(_on_inst_changed)
                 update_telemetry({"accounts": fleet_dispatcher.get_fleet_telemetry()})
                 print(f"[Runner] 🌐 Fleet Dispatcher initialized with {len(fleet_dispatcher.accounts)} accounts!")
         except Exception as e:
@@ -440,26 +452,38 @@ def run_live_session(args):
         for adp in candidates:
             p_map = getattr(adp, "prices_by_symbol", None) or {}
             sym_px = p_map.get(target_sym)
+            if sym_px is None and target_sym and hasattr(adp, "ensure_spot_subscriptions"):
+                try:
+                    adp.ensure_spot_subscriptions([target_sym])
+                except Exception:
+                    pass
             if sym_px is not None and float(sym_px) > 0:
                 px_val = float(sym_px)
                 state["last_price"] = px_val
                 return px_val
-            lp_val = getattr(adp, "last_price", None)
-            if lp_val is not None and float(lp_val) > 0:
-                px_val = float(lp_val)
-                state["last_price"] = px_val
-                return px_val
+            if getattr(adp, "current_symbol", "").upper() == target_sym:
+                lp_val = getattr(adp, "last_price", None)
+                if lp_val is not None and float(lp_val) > 0:
+                    val = float(lp_val)
+                    if ("XAU" in target_sym or "XAG" in target_sym) and val < 500.0:
+                        continue
+                    if "XAU" not in target_sym and "XAG" not in target_sym and val > 500.0:
+                        continue
+                    state["last_price"] = val
+                    return val
 
-        st_px = state.get("last_price")
-        return float(st_px) if st_px is not None and float(st_px) > 0 else 0.0
+        return 0.0
 
     def is_order_strictly_passive(side: str, price: float, market_price: float) -> bool:
         if market_price <= 0:
             return False
+        sym = str(args.instrument or "").upper()
+        tick = float(TICK_SIZES.get(sym, 0.001 if "JPY" in sym else (0.01 if ("XAU" in sym or "XAG" in sym or "US" in sym) else 0.00001)))
+        buf = 2.0 * tick
         if side.upper() in ("LONG", "BUY"):
-            return price <= (market_price - 0.50)
+            return price <= (market_price - buf)
         elif side.upper() in ("SHORT", "SELL"):
-            return price >= (market_price + 0.50)
+            return price >= (market_price + buf)
         return False
 
     def rearm_profile(opt_key: str, force: bool = False, brk_low_front=None, brk_low_back=None, brk_high_front=None, brk_high_back=None):
@@ -1502,6 +1526,7 @@ def run_live_session(args):
                 for _ev_msg in _cw_events:
                     print(f"[ConditionalWatch] {_ev_msg}")
                     dashboard.log_telegram_message("OUT", _ev_msg)
+                    if bridge: bridge.send(_ev_msg)
                 if _trig_item is not None and not _slot_busy:
                     print(f"🚀 [CONDITIONAL TRIGGER] Auto-deploying {_trig_item.symbol} ({_trig_item.tf})...")
                     _CONDITIONAL_QUEUE.on_slot_occupied(_trig_item.symbol, _trig_item.correlation_group)

@@ -1,48 +1,13 @@
 {
-  "TOPSTEP_PRACTICE": {
-    "broker": "topstepx",
-    "account_id": "TS_PRACTICE_01",
-    "instrument": "MNQ",
-    "side_risk_budget": 1000.0,
-    "max_drawdown_limit": 1500.0,
-    "drawdown_type": "EOD",
-    "enabled": true,
-    "credentials": {
-      "api_key": ""
-    }
-  },
-  "TOPSTEP_COMBINE": {
-    "broker": "topstepx",
-    "account_id": "TS_COMBINE_01",
-    "instrument": "MNQ",
-    "side_risk_budget": 400.0,
-    "max_drawdown_limit": 2000.0,
-    "drawdown_type": "EOD",
-    "enabled": false,
-    "credentials": {
-      "api_key": ""
-    }
-  },
-  "IRONBEAM_DEMO": {
-    "broker": "ironbeam",
-    "account_id": "51428111",
-    "instrument": "NNQ",
-    "side_risk_budget": 100.0,
-    "max_drawdown_limit": 2000.0,
-    "drawdown_type": "EOD",
-    "enabled": true,
-    "credentials": {}
-  },
-  "HYPERLIQUID_TESTNET": {
-    "broker": "hyperliquid",
-    "network": "testnet",
-    "account_id": "",
-    "instrument": "SOL-USD",
-    "side_risk_budget": 100.0,
+  "ICMARKETS_CTRADER": {
+    "broker": "ctrader",
+    "account_id": "49641735",
+    "instrument": "USTEC",
+    "side_risk_budget": 50.0,
     "max_drawdown_limit": 250.0,
     "drawdown_type": "CONTINUOUS",
-    "is_live_exec": false,
-    "enabled": false,
+    "is_live_exec": true,
+    "enabled": true,
     "credentials": {}
   }
 }

@@ -1,7 +1,7 @@
 import os, time, queue, threading, datetime
 from typing import Optional, Dict, Any, List
 from src.core.interfaces import BaseBrokerAdapter
-from src.config import IC_FX_SPECS
+from src.config import IC_FX_SPECS, LOT_STEPS, MIN_QTYS, SYMBOL_ALIASES
 
 class CTraderAdapter(BaseBrokerAdapter):
     def __init__(self, account_id: str = "", is_live_exec: bool = False):
@@ -44,7 +44,12 @@ class CTraderAdapter(BaseBrokerAdapter):
         return (self.best_ask - self.best_bid) <= max_spread
 
     def set_instrument(self, instrument: str):
-        self.current_symbol = str(instrument or "").upper()
+        new_sym = str(instrument or "").upper()
+        if new_sym and new_sym != getattr(self, "current_symbol", ""):
+            self.last_price = None
+            self.best_bid = None
+            self.best_ask = None
+        self.current_symbol = new_sym
         if self._connected and self._client and self.current_symbol:
             try:
                 self.ensure_spot_subscriptions([self.current_symbol])
@@ -141,31 +146,27 @@ class CTraderAdapter(BaseBrokerAdapter):
     def _handle_msg(self, payload):
         name = type(payload).__name__
         if name == "ProtoOASymbolsListRes":
+            want_syms = set(IC_FX_SPECS.keys()) | {self.current_symbol, "EURUSD", "XAUUSD", "AUDNZD"}
             for s in payload.symbol:
-                sym_u = s.symbolName.upper()
-                self._symbol_ids[sym_u] = s.symbolId
-                self._id_to_symbol[s.symbolId] = sym_u
-            for sym_to_sub in {self.current_symbol, "XAUUSD"}:
-                if sym_to_sub and sym_to_sub in self._symbol_ids:
-                    self._subscribe_spots(sym_to_sub)
+                raw_u = s.symbolName.upper()
+                norm_u = raw_u.split(".")[0].split("_")[0]
+                self._symbol_ids[raw_u] = s.symbolId
+                self._id_to_symbol[s.symbolId] = norm_u if norm_u in want_syms else raw_u
+                if norm_u in want_syms and norm_u not in self._symbol_ids:
+                    self._symbol_ids[norm_u] = s.symbolId
+            to_sub = [sym for sym in want_syms if sym and sym in self._symbol_ids]
+            self.ensure_spot_subscriptions(to_sub)
+            print(f"[cTrader] 📡 Subscribed spots for {len(to_sub)} symbols (current={self.current_symbol})")
         elif name == "ProtoOASpotEvent":
             sym = self._id_to_symbol.get(getattr(payload, "symbolId", 0), self.current_symbol)
-            digits = 3 if "JPY" in sym else (2 if ("XAU" in sym or "XAG" in sym) else 5)
-            scale = 10 ** digits
+            tick = IC_FX_SPECS.get(sym, {}).get("tick", 0.001 if "JPY" in sym else (0.01 if any(k in sym for k in ("XAU", "US", "DE40", "UK100", "XTI", "BTC")) else 0.00001))
+            digits = max(0, round(-__import__("math").log10(tick))) if tick < 1 else 0
             raw_b = float(getattr(payload, "bid", 0) or 0)
             raw_a = float(getattr(payload, "ask", 0) or 0)
-            eff_scale = scale
-            probe_px = (raw_b or raw_a) / eff_scale if eff_scale else 0.0
-            if ("XAU" in sym or "XAG" in sym) and probe_px > 20000.0:
-                eff_scale = 100000.0
-            raw_b = float(getattr(payload, "bid", 0) or 0)
-            raw_a = float(getattr(payload, "ask", 0) or 0)
-            eff_scale = scale
-            probe = (raw_b or raw_a) / eff_scale if eff_scale else 0.0
-            if ("XAU" in sym or "XAG" in sym) and probe > 20000.0:
-                eff_scale = 100000.0
-            b_val = raw_b / eff_scale if raw_b else 0.0
-            a_val = raw_a / eff_scale if raw_a else 0.0
+            # cTrader Open API v2 encodes all spot bid/ask prices as integer * 100,000
+            eff_scale = 100000.0
+            b_val = round(raw_b / eff_scale, digits) if raw_b else 0.0
+            a_val = round(raw_a / eff_scale, digits) if raw_a else 0.0
             if b_val and a_val:
                 mid = round((b_val + a_val) / 2.0, digits)
             else:
@@ -204,6 +205,8 @@ class CTraderAdapter(BaseBrokerAdapter):
                 print(f"[cTrader] 🔄 Reconciled {len(self._open_positions)} open position(s), net={self.position}")
             except Exception as e:
                 print(f"[cTrader] ⚠️ Reconcile parse err: {e}")
+        elif name == "ProtoOAOrderErrorEvent":
+            print(f"[cTrader] ❌ OrderError: code={getattr(payload, 'errorCode', '')} desc={getattr(payload, 'description', '')} oid={getattr(payload, 'orderId', '')}")
         elif name == "ProtoOAExecutionEvent":
             ord_obj = getattr(payload, "order", None)
             pos_obj = getattr(payload, "position", None)
@@ -320,8 +323,13 @@ class CTraderAdapter(BaseBrokerAdapter):
         if not self._connected: self.connect()
 
     def _lots_to_volume(self, lots: float, instrument: str) -> int:
-        units = IC_FX_SPECS.get(instrument.upper(), {}).get("contract_units", 100000)
-        return int(round(float(lots) * units * 100))
+        sym = instrument.upper()
+        spec = IC_FX_SPECS.get(sym, {})
+        units = spec.get("contract_units", 100000)
+        step = float(LOT_STEPS.get(sym, spec.get("lot_step", 0.01)))
+        min_q = float(MIN_QTYS.get(sym, spec.get("min_qty", 0.01)))
+        snapped = max(min_q, round(round(float(lots) / step) * step, 2))
+        return int(round(snapped * units * 100))
 
     def place_limit_order(self, oid: str, side: str, price: float, size: float, instrument: str = "EURUSD", tif: str = "GTC", reduce_only: bool = False, tp: Optional[float] = None, sl: Optional[float] = None) -> Optional[str]:
         inst = (instrument or self.current_symbol).upper()

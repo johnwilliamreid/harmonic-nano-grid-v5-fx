@@ -730,15 +730,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <option value="XAGUSD">XAGUSD ($5,000/pt)</option>
         <option value="USTEC">USTEC ($1/pt)</option>
         <option value="US500">US500 ($1/pt)</option>
+        <option value="DE40">DE40 ($1.10/pt)</option>
+        <option value="UK100">UK100 ($1.27/pt)</option>
+        <option value="US30">US30 ($1.00/pt)</option>
+        <option value="US2000">US2000 ($1.00/pt)</option>
+        <option value="XTIUSD">XTIUSD ($100/pt)</option>
+        <option value="XCUUSD">XCUUSD ($250/pt)</option>
+        <option value="BTCUSD">BTCUSD ($1.00/pt)</option>
       </select>
     </div>
     <div class="form-field">
       <label>LOW BOUNDARY</label>
-      <input type="number" id="inp-low" step="0.25" placeholder="e.g. 27615.75" oninput="saveFormValues();">
+      <input type="number" id="inp-low" step="any" placeholder="e.g. 1.64700" oninput="saveFormValues();">
     </div>
     <div class="form-field">
       <label>HIGH BOUNDARY</label>
-      <input type="number" id="inp-high" step="0.25" placeholder="e.g. 28662.00" oninput="saveFormValues();">
+      <input type="number" id="inp-high" step="any" placeholder="e.g. 1.65400" oninput="saveFormValues();">
     </div>
     <div class="form-field">
       <label>TIMEFRAME</label>
@@ -1074,8 +1081,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 let stagedCardsCache = [];
 
 function pxDec(sym) {
-  sym = (sym || window._LAST_TELEMETRY?.instrument || document.getElementById("inp-instrument")?.value || "EURUSD").toUpperCase();
-  if (["XAUUSD","XAGUSD","USTEC","US500","MNQ","NNQ","MES"].includes(sym)) return 2;
+  sym = (sym || window._LAST_TELEMETRY?.instrument || document.getElementById("inp-instrument")?.value || "").toUpperCase();
+  if (sym === "XCUUSD" || sym === "HG") return 4;
+  if (["XAUUSD","XAGUSD","USTEC","US500","DE40","FDXSM","UK100","US30","US2000","RTY","XTIUSD","BTCUSD","MNQ","NNQ","MES"].includes(sym)) return 2;
   return sym.includes("JPY") ? 3 : 5;
 }
 function pxTick(sym) { const dec = pxDec(sym); return dec === 5 ? 0.00001 : (dec === 3 ? 0.001 : 0.01); }
@@ -1093,21 +1101,15 @@ function switchActiveInstrument(sym) {
 }
 
 function recalcSpecDetails() {
-  const sym = document.getElementById('inp-instrument')?.value || 'EURUSD';
+  const sym = (window._LAST_TELEMETRY?.instrument || document.getElementById('inp-instrument')?.value || '').toUpperCase();
   const bNNQ = document.getElementById('toggle-nnq');
   const bMNQ = document.getElementById('toggle-mnq');
   if (bNNQ && bMNQ) {
-    if (sym === 'EURUSD') {
-      bNNQ.style.background = 'var(--warn)';
-      bNNQ.style.color = '#000';
-      bMNQ.style.background = 'transparent';
-      bMNQ.style.color = 'var(--text-muted)';
-    } else {
-      bMNQ.style.background = 'var(--warn)';
-      bMNQ.style.color = '#000';
-      bNNQ.style.background = 'transparent';
-      bNNQ.style.color = 'var(--text-muted)';
-    }
+    const isAlt = sym === 'XAUUSD' || sym === 'MNQ';
+    bNNQ.style.background = isAlt ? 'transparent' : 'var(--warn)';
+    bNNQ.style.color = isAlt ? 'var(--text-muted)' : '#000';
+    bMNQ.style.background = isAlt ? 'var(--warn)' : 'transparent';
+    bMNQ.style.color = isAlt ? '#000' : 'var(--text-muted)';
   }
 }
 
@@ -1127,7 +1129,7 @@ function toggleRangeForm() {
 function saveFormValues() {
   try {
     const vals = {
-      instrument: document.getElementById('inp-instrument')?.value || 'EURUSD',
+      instrument: (window._LAST_TELEMETRY?.instrument || document.getElementById('inp-instrument')?.value || '').toUpperCase(),
       low: document.getElementById('inp-low')?.value || '',
       high: document.getElementById('inp-high')?.value || '',
       tf: document.getElementById('inp-tf')?.value || '4H',
@@ -1192,7 +1194,7 @@ function autoFillBreakers() {
 
 async function submitNewRange() {
   saveFormValues();
-  const instrument = document.getElementById('inp-instrument')?.value || 'EURUSD';
+  const instrument = (window._LAST_TELEMETRY?.instrument || document.getElementById('inp-instrument')?.value || '').toUpperCase();
   const low = parseFloat(document.getElementById('inp-low').value);
   const high = parseFloat(document.getElementById('inp-high').value);
   const tf = document.getElementById('inp-tf').value;
@@ -1310,7 +1312,7 @@ function showGridPreview(key) {
     return;
   }
 
-  const _mMap = {MNQ:2.0,NNQ:0.2,MES:5.0,M2K:5.0,MYM:0.5,MGC:10.0,MCL:100.0,NQ:20.0,ES:50.0,RTY:50.0,YM:5.0,GC:100.0,CL:1000.0};
+  const _mMap = {EURUSD:100000,GBPUSD:100000,AUDUSD:100000,NZDUSD:100000,USDJPY:650,USDCAD:70000,USDCHF:113500,EURGBP:127000,EURJPY:650,EURAUD:65000,EURNZD:59000,EURCAD:70000,EURCHF:113500,GBPJPY:650,GBPAUD:65000,GBPNZD:59000,GBPCAD:70000,GBPCHF:113500,AUDJPY:650,AUDNZD:59000,AUDCAD:70000,AUDCHF:113500,NZDJPY:650,NZDCAD:70000,NZDCHF:113500,CADJPY:650,CADCHF:113500,CHFJPY:650,XAUUSD:100,XAGUSD:5000,USTEC:1,US500:1,DE40:1.10,FDXSM:1.10,UK100:1.27,US30:1.0,US2000:1.0,RTY:1.0,XTIUSD:100.0,XCUUSD:250.0,HG:250.0,BTCUSD:1.0,MNQ:2.0,NNQ:0.2,MES:5.0};
   const ibAcct = (card.account_risks || []).find(a => a.id.includes("IRONBEAM")) || (card.account_risks || [])[0];
   const acctLabel = ibAcct ? ` [${ibAcct.id} • ${ibAcct.instrument}]` : "";
   const dispRisk = ibAcct ? ibAcct.side_risk : card.side_risk;
@@ -1582,6 +1584,13 @@ function updateFleetTable(accounts) {
             <option value="XAGUSD" ${ (a.instrument || "EURUSD") === "XAGUSD" ? "selected" : "" }>XAGUSD ($5,000/pt)</option>
             <option value="USTEC" ${ (a.instrument || "EURUSD") === "USTEC" ? "selected" : "" }>USTEC ($1/pt)</option>
             <option value="US500" ${ (a.instrument || "EURUSD") === "US500" ? "selected" : "" }>US500 ($1/pt)</option>
+            <option value="DE40" ${ (a.instrument || "EURUSD") === "DE40" ? "selected" : "" }>DE40 ($1.10/pt)</option>
+            <option value="UK100" ${ (a.instrument || "EURUSD") === "UK100" ? "selected" : "" }>UK100 ($1.27/pt)</option>
+            <option value="US30" ${ (a.instrument || "EURUSD") === "US30" ? "selected" : "" }>US30 ($1.00/pt)</option>
+            <option value="US2000" ${ (a.instrument || "EURUSD") === "US2000" ? "selected" : "" }>US2000 ($1.00/pt)</option>
+            <option value="XTIUSD" ${ (a.instrument || "EURUSD") === "XTIUSD" ? "selected" : "" }>XTIUSD ($100/pt)</option>
+            <option value="XCUUSD" ${ (a.instrument || "EURUSD") === "XCUUSD" ? "selected" : "" }>XCUUSD ($250/pt)</option>
+            <option value="BTCUSD" ${ (a.instrument || "EURUSD") === "BTCUSD" ? "selected" : "" }>BTCUSD ($1.00/pt)</option>
           </select>
         </td>
         <td class="mono" style="padding:6px 8px; text-align:right;">
@@ -1711,7 +1720,7 @@ async function refreshTelemetry() {
     const sStep = d.container?.s_step || 1;
     const liveP = d.live_price || 0;
 
-    document.getElementById('hdr-asset').textContent = d.instrument || 'EURUSD';
+    if (d.instrument) { document.getElementById('hdr-asset').textContent = d.instrument; }
     document.getElementById('hdr-container').textContent = `${low.toFixed(pxDec(d.instrument))} — ${high.toFixed(pxDec(d.instrument))}`;
     document.getElementById('hdr-span').textContent = (d.container?.delta_p || 0).toFixed(pxDec(d.instrument));
     document.getElementById('hdr-eq').textContent = pEq.toFixed(pxDec(d.instrument));
@@ -1903,7 +1912,7 @@ function openAuditorModal(selectedKey) {
   const bias = tel.bias || {};
 
   let rungsList = [];
-  let inst = tel.instrument || "EURUSD";
+  let inst = (tel.instrument || document.getElementById("inp-instrument")?.value || "").toUpperCase();
   let mult = (inst === "MNQ") ? 2.0 : 0.20;
   const _sym = (document.getElementById("inp-instrument")?.value || "MNQ").toUpperCase(); let fee = _sym === "NNQ" ? 1.68 : (_sym === "MNQ" ? 1.86 : 1.94);
   let sideBudget = 200.0;
