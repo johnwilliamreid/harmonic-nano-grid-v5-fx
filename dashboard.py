@@ -1909,9 +1909,9 @@ async function refreshTelemetry() {
         <td class="mono" style="font-weight:700; color:var(--text);">L${r.index}</td>
         <td style="color:${sideColor}; font-weight:700;">${r.side}</td>
         <td><b>${r.role}</b> ${snapBadge} ${probingTag}</td>
-        <td class="mono" style="text-align:right; font-weight:700;">${r.price.toFixed(pxDec())}</td>
+        <td class="mono" style="text-align:right; font-weight:700;">${Number(r.price || 0).toFixed(pxDec(d.instrument))}</td>
         <td class="mono" style="text-align:right; color:var(--accent);">${deltaStr}</td>
-        <td class="mono" style="text-align:right;">${r.tp.toFixed(pxDec())}</td>
+        <td class="mono" style="text-align:right;">${Number(r.tp || 0).toFixed(pxDec(d.instrument))}</td>
         <td class="mono" style="text-align:center;">${qtyStr}</td>
         <td class="mono" style="text-align:right; color:var(--bear); font-weight:600;">${riskStr}</td>
         <td class="mono" style="text-align:right; color:var(--bull); font-weight:600;">${rewStr}</td>
