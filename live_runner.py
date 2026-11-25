@@ -317,8 +317,8 @@ def run_live_session(args):
     grid_list = []
     for idx in sorted(grid_dict.keys()):
         r = grid_dict[idx]
-        geo_p = round(geom.range_low + idx * geom.s_step, 2)
-        snap_delta = round(r["price"] - geo_p, 2)
+        geo_p = round(geom.range_low + idx * geom.s_step, 5)
+        snap_delta = round(r["price"] - geo_p, 5)
         item = {
             "index": idx,
             "side": r["side"],
@@ -490,7 +490,7 @@ def run_live_session(args):
         nonlocal active_profile, grid_dict, grid_by_idx
 
         current_name = state.get("active_profile_name")
-        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D", "OPTION_E", "OPTION_F_TREND_BREAKER", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN"):
+        if not force and opt_key in ("SNAPPED", "LEAN_2_RUNG", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D", "OPTION_E", "OPTION_F_TREND_BREAKER", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN", "OPTION_I_QUARTILE_BOX"):
             if current_name and (opt_key in current_name or (opt_key == "SNAPPED" and "Mitigation Priority" in current_name)):
                 print(f"[RE-ARM GUARD] Grid already armed with {current_name}. Skipping redundant order cycling.")
                 return True
@@ -720,7 +720,7 @@ def run_live_session(args):
                     f"───────────────────────────────────\n"
                     f"• Instrument: <code>{args.instrument}</code> ({args.tf})\n"
                     f"• Boundaries: <code>{geom.range_low:.2f} — {geom.range_high:.2f}</code> (Δ {geom.range_high - geom.range_low:.2f} pts)\n"
-                    f"• Equilibrium (L8): <code>{round((geom.range_low + geom.range_high)/2.0, 2):.2f}</code>\n"
+                    f"• Equilibrium (L8): <code>{round((geom.range_low + geom.range_high)/2.0, 5):.5f}</code>\n"
                     f"• Profile: <b>{active_profile.get('name', 'Staged Profile')}</b> (Posture: <code>{posture}</code>)\n"
                     f"• Directional Bias: <b>{bias_data.get('regime', 'NEUTRAL')}</b> (Directive: <code>{bias_data.get('directive', 'BALANCED')}</code>)\n"
                     f"• Max Single-Side Risk: <b>${r_stats['max']:.2f}</b> (🟢 L: ${r_stats['long']:.2f} | 🔴 S: ${r_stats['short']:.2f})\n\n"
@@ -1134,7 +1134,7 @@ def run_live_session(args):
                 except Exception as e:
                     print(f"[Telegram] Failed to send standby heartbeat: {e}")
 
-            p_eq = round((geom.range_low + geom.range_high) / 2.0, 2)
+            p_eq = round((geom.range_low + geom.range_high) / 2.0, 5)
             if (live_px or 0.0) > 0:
                 cur_vs_eq = 1 if live_px >= p_eq else -1
                 if prior_price_vs_eq != 0 and cur_vs_eq != prior_price_vs_eq and not eq_alert_triggered:

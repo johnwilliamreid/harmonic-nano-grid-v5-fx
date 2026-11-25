@@ -4,8 +4,8 @@ from typing import Dict, List, Optional, Any
 
 FEES = {"MNQ": 1.86, "NNQ": 1.68, "MES": 1.88, "M2K": 1.88, "MYM": 1.88, "MGC": 5.88, "MCL": 3.02, "NQ": 5.14, "ES": 5.14, "RTY": 5.14, "YM": 5.14, "GC": 8.08, "CL": 8.08}
 MULTS = {"MNQ": 2.0, "NNQ": 0.2, "MES": 5.0, "M2K": 5.0, "MYM": 0.5, "MGC": 10.0, "MCL": 100.0, "NQ": 20.0, "ES": 50.0, "RTY": 50.0, "YM": 5.0, "GC": 100.0, "CL": 1000.0}
-PROFILES = ["OPTION_A", "OPTION_B", "OPTION_C", "SNAPPED", "LEAN_2_RUNG", "OPTION_F_TREND_BREAKER", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN"]
-DRAG_SENS = {"OPTION_A": 0.60, "OPTION_C": 0.60, "OPTION_H_MT_SPAN": 0.60, "OPTION_B": 0.35, "SNAPPED": 0.35, "OPTION_G_MT_CORE": 0.35, "LEAN_2_RUNG": 0.15, "OPTION_F_TREND_BREAKER": 0.0}
+PROFILES = ["OPTION_A", "OPTION_B", "OPTION_C", "SNAPPED", "LEAN_2_RUNG", "OPTION_F_TREND_BREAKER", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN", "OPTION_I_QUARTILE_BOX"]
+DRAG_SENS = {"OPTION_A": 0.60, "OPTION_C": 0.60, "OPTION_H_MT_SPAN": 0.60, "OPTION_I_QUARTILE_BOX": 0.35, "OPTION_B": 0.35, "SNAPPED": 0.35, "OPTION_G_MT_CORE": 0.35, "LEAN_2_RUNG": 0.15, "OPTION_F_TREND_BREAKER": 0.0}
 
 def resolve_v5_economics(inst, low, high):
     s = str(inst or "MNQ").upper()
@@ -83,26 +83,26 @@ class V5ProfileSelector:
 
     def _p2(self, p, wl, rc):
         if wl > 5.0 or rc < 0.25:
-            d = {"OPTION_B": 1.0, "LEAN_2_RUNG": 0.8, "OPTION_G_MT_CORE": 0.65, "SNAPPED": 0.45, "OPTION_C": 0.3, "OPTION_A": 0.2, "OPTION_H_MT_SPAN": 0.25, "OPTION_F_TREND_BREAKER": 0.5}
+            d = {"OPTION_B": 1.0, "LEAN_2_RUNG": 0.8, "OPTION_G_MT_CORE": 0.65, "SNAPPED": 0.45, "OPTION_C": 0.3, "OPTION_A": 0.2, "OPTION_H_MT_SPAN": 0.25, "OPTION_I_QUARTILE_BOX": 0.35, "OPTION_F_TREND_BREAKER": 0.5}
         elif wl < 3.0:
-            d = {"OPTION_C": 0.95, "OPTION_G_MT_CORE": 0.9, "SNAPPED": 0.85, "LEAN_2_RUNG": 0.75, "OPTION_B": 0.6, "OPTION_A": 0.55, "OPTION_H_MT_SPAN": 0.65, "OPTION_F_TREND_BREAKER": 0.6}
+            d = {"OPTION_C": 0.95, "OPTION_G_MT_CORE": 0.9, "SNAPPED": 0.85, "LEAN_2_RUNG": 0.75, "OPTION_B": 0.6, "OPTION_A": 0.55, "OPTION_H_MT_SPAN": 0.65, "OPTION_I_QUARTILE_BOX": 0.92, "OPTION_F_TREND_BREAKER": 0.6}
         else:
-            d = {"SNAPPED": 0.95, "OPTION_G_MT_CORE": 0.95, "OPTION_A": 0.85, "OPTION_H_MT_SPAN": 0.8, "OPTION_B": 0.75, "OPTION_C": 0.7, "LEAN_2_RUNG": 0.65, "OPTION_F_TREND_BREAKER": 0.7}
+            d = {"SNAPPED": 0.95, "OPTION_G_MT_CORE": 0.95, "OPTION_A": 0.85, "OPTION_H_MT_SPAN": 0.8, "OPTION_I_QUARTILE_BOX": 0.85, "OPTION_B": 0.75, "OPTION_C": 0.7, "LEAN_2_RUNG": 0.65, "OPTION_F_TREND_BREAKER": 0.7}
         return d.get(p, 0.5)
 
     def _p3(self, p, sym):
-        return sym if p in ("OPTION_A", "OPTION_B", "OPTION_C") else (1.0 - 0.35 * sym if p in ("SNAPPED", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN", "LEAN_2_RUNG") else 0.6)
+        return sym if p in ("OPTION_A", "OPTION_B", "OPTION_C", "OPTION_I_QUARTILE_BOX") else (1.0 - 0.35 * sym if p in ("SNAPPED", "OPTION_G_MT_CORE", "OPTION_H_MT_SPAN", "LEAN_2_RUNG") else 0.6)
 
     def _p4(self, p, dm, sm):
         st = {dm, sm}
         if st == {"FRESH"}:
-            return {"OPTION_A": 0.95, "SNAPPED": 0.95, "OPTION_G_MT_CORE": 0.9, "OPTION_H_MT_SPAN": 0.9, "OPTION_B": 0.85, "OPTION_C": 0.85, "LEAN_2_RUNG": 0.7, "OPTION_F_TREND_BREAKER": 0.85}[p]
+            return {"OPTION_A": 0.95, "SNAPPED": 0.95, "OPTION_G_MT_CORE": 0.9, "OPTION_H_MT_SPAN": 0.9, "OPTION_I_QUARTILE_BOX": 0.85, "OPTION_B": 0.85, "OPTION_C": 0.85, "LEAN_2_RUNG": 0.7, "OPTION_F_TREND_BREAKER": 0.85}[p]
         if "MT_MITIGATED" in st:
-            return {"OPTION_G_MT_CORE": 0.95, "LEAN_2_RUNG": 0.9, "OPTION_B": 0.7, "OPTION_F_TREND_BREAKER": 0.65, "OPTION_C": 0.55, "SNAPPED": 0.5, "OPTION_A": 0.25, "OPTION_H_MT_SPAN": 0.3}[p]
-        return {"OPTION_G_MT_CORE": 0.9, "SNAPPED": 0.85, "LEAN_2_RUNG": 0.8, "OPTION_B": 0.8, "OPTION_C": 0.75, "OPTION_H_MT_SPAN": 0.7, "OPTION_A": 0.55, "OPTION_F_TREND_BREAKER": 0.75}[p]
+            return {"OPTION_G_MT_CORE": 0.95, "LEAN_2_RUNG": 0.9, "OPTION_B": 0.7, "OPTION_F_TREND_BREAKER": 0.65, "OPTION_C": 0.55, "SNAPPED": 0.5, "OPTION_A": 0.25, "OPTION_H_MT_SPAN": 0.3, "OPTION_I_QUARTILE_BOX": 0.50}[p]
+        return {"OPTION_G_MT_CORE": 0.9, "SNAPPED": 0.85, "LEAN_2_RUNG": 0.8, "OPTION_B": 0.8, "OPTION_C": 0.75, "OPTION_H_MT_SPAN": 0.7, "OPTION_I_QUARTILE_BOX": 0.70, "OPTION_A": 0.55, "OPTION_F_TREND_BREAKER": 0.75}[p]
 
     def _p5(self, p, dd, age):
-        b = {"LEAN_2_RUNG": 0.95, "OPTION_B": 0.9, "OPTION_F_TREND_BREAKER": 0.85, "OPTION_G_MT_CORE": 0.75, "OPTION_C": 0.65, "SNAPPED": 0.6, "OPTION_A": 0.0, "OPTION_H_MT_SPAN": 0.0}[p] if dd.upper() == "INTRADAY" else {"OPTION_A": 0.9, "SNAPPED": 0.9, "OPTION_G_MT_CORE": 0.9, "OPTION_B": 0.85, "OPTION_C": 0.85, "OPTION_H_MT_SPAN": 0.85, "LEAN_2_RUNG": 0.75, "OPTION_F_TREND_BREAKER": 0.8}[p]
+        b = {"LEAN_2_RUNG": 0.95, "OPTION_B": 0.9, "OPTION_F_TREND_BREAKER": 0.85, "OPTION_G_MT_CORE": 0.75, "OPTION_C": 0.65, "SNAPPED": 0.6, "OPTION_A": 0.0, "OPTION_H_MT_SPAN": 0.0, "OPTION_I_QUARTILE_BOX": 0.75}[p] if dd.upper() == "INTRADAY" else {"OPTION_A": 0.9, "SNAPPED": 0.9, "OPTION_G_MT_CORE": 0.9, "OPTION_B": 0.85, "OPTION_C": 0.85, "OPTION_H_MT_SPAN": 0.8, "OPTION_I_QUARTILE_BOX": 0.855, "LEAN_2_RUNG": 0.75, "OPTION_F_TREND_BREAKER": 0.8}[p]
         return min(1.0, b * max(0.35, 1.0 - (age - 0.65) * 1.5)) if (age > 0.65 and p in ("OPTION_A", "SNAPPED", "OPTION_H_MT_SPAN")) else b
 
     def _emp(self, p, stats):

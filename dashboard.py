@@ -1791,7 +1791,7 @@ async function refreshTelemetry() {
       else shelfElem.textContent = 'Upper Invalidation (L16)';
     }
 
-    document.getElementById('val-step-size').textContent = `${sStep.toFixed(pxDec(d.instrument))} pts`;
+    document.getElementById('val-step-size').textContent = `${sStep.toFixed(pxDec(inst))} pts`;
 
     if (d.lifecycle) {
       document.getElementById('val-tf').textContent = `${(d.lifecycle.tf || '4H').toUpperCase()} TIER`;
@@ -2062,8 +2062,8 @@ function openAuditorModal(selectedKey) {
       <tr style="${rowStyle}">
         <td style="font-weight:700; color:${sideColor};">L${idx}</td>
         <td>${r.role || ""}${snapBadge}</td>
-        <td>${px.toFixed(2)}</td>
-        <td>${stopPx.toFixed(2)}</td>
+        <td>${px.toFixed(pxDec(inst))}</td>
+        <td>${stopPx.toFixed(pxDec(inst))}</td>
         <td>${distPts.toFixed(pxDec(window._LAST_TELEMETRY?.instrument))} pt</td>
         <td>$${unitRisk.toFixed(2)}</td>
         <td style="font-weight:700; color:${disarmed ? "#8b949e" : (actCt > 0 ? "var(--warn)" : "#fff")};">${ctDisplay}</td>
@@ -2113,14 +2113,14 @@ function openAuditorModal(selectedKey) {
         </select>
       </div>
       <div style="font-size:11px; color:#8b949e;">
-        Stop Buffer: <b>±1 Step (${sStep.toFixed(pxDec(d.instrument))} pt)</b>
+        Stop Buffer: <b>±1 Step (${sStep.toFixed(pxDec(inst))} pt)</b>
       </div>
     </div>
 
     <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 14px; margin-bottom:12px;">
       <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
         <div><b>Target:</b> <span style="color:#58a6ff; font-weight:700;">${sourceLabel}</span></div>
-        <div><b>Container:</b> ${l0.toFixed(2)} — ${l16.toFixed(2)} (${spanPts} pts)</div>
+        <div><b>Container:</b> ${l0.toFixed(pxDec(inst))} — ${l16.toFixed(pxDec(inst))} (${Math.abs(l16 - l0).toFixed(pxDec(inst))} pts)</div>
         <div><b>Asset:</b> ${inst} ($${mult.toFixed(2)}/pt)</div>
         <div><b>RT Comm:</b> $${fee.toFixed(2)}</div>
         <div><b>Side Budget:</b> $${sideBudget.toFixed(2)}</div>
@@ -2444,7 +2444,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "role": r["role"],
                         "price": r["price"],
                         "geo_price": geo_p,
-                        "snap_delta": round(r["price"] - geo_p, 2),
+                        "snap_delta": round(r["price"] - geo_p, 5),
                         "tp": r["tp"],
                         "contracts": contracts,
                         "risk_dollar": round(r.get("risk_dollar", 0.0), 2),
@@ -2628,6 +2628,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ("OPTION_F_TREND_BREAKER", "Trend Breaker (Structural Targets)", opts.get("OPTION_F_TREND_BREAKER", {}).get("discount_rungs", []), opts.get("OPTION_F_TREND_BREAKER", {}).get("premium_rungs", [])),
                 ("OPTION_G_MT_CORE", "MT-to-MT Breaker Core", opts.get("OPTION_G_MT_CORE", {}).get("discount_rungs", []), opts.get("OPTION_G_MT_CORE", {}).get("premium_rungs", [])),
                 ("OPTION_H_MT_SPAN", "MT-to-MT Full Span", opts.get("OPTION_H_MT_SPAN", {}).get("discount_rungs", []), opts.get("OPTION_H_MT_SPAN", {}).get("premium_rungs", [])),
+                ("OPTION_I_QUARTILE_BOX", "Quartile Box (0.25–0.75)", opts.get("OPTION_I_QUARTILE_BOX", {}).get("discount_rungs", [4, 5, 6, 7]), opts.get("OPTION_I_QUARTILE_BOX", {}).get("premium_rungs", [9, 10, 11, 12])),
             ]
 
             calc_cards = []
@@ -2654,8 +2655,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "index": idx,
                             "side": r.get("side", "MID"),
                             "role": r.get("role", "MID_RANGE"),
-                            "price": round(r.get("price", 0.0), 2),
-                            "tp": round(r.get("tp", 0.0), 2),
+                            "price": round(r.get("price", 0.0), max(2, min(8, -int(__import__("math").floor(__import__("math").log10(float(getattr(geom, "tick_size", 0.00001) or 0.00001)) + 1e-12)))) if float(getattr(geom, "tick_size", 0.00001) or 0.00001) < 1.0 else 2),
+                            "tp": round(r.get("tp", 0.0), max(2, min(8, -int(__import__("math").floor(__import__("math").log10(float(getattr(geom, "tick_size", 0.00001) or 0.00001)) + 1e-12)))) if float(getattr(geom, "tick_size", 0.00001) or 0.00001) < 1.0 else 2),
                             "contracts": r.get("contracts", 0), "cap": r.get("cap", 4),
                             "risk_dollar": round(r.get("risk_dollar", 0.0), 2)
                         })

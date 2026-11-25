@@ -813,6 +813,13 @@ class HarmonicGridGeometry:
                 "discount_rungs": list(range(_d_mt, 8)),
                 "premium_rungs": list(range(9, _s_mt + 1)),
             }
+            options["OPTION_I_QUARTILE_BOX"] = {
+                "name": "Quartile Box (0.25–0.75)",
+                "desc": "All & only rungs between 0.25 (L4) and 0.75 (L12) inclusive",
+                "discount_rungs": [4, 5, 6, 7],
+                "premium_rungs": [9, 10, 11, 12],
+                "l7_policy": "Included (Inner quartile box)",
+            }
         except Exception as _mt_err:
             print(f"[WARN] MT profile generation skipped: {_mt_err}")
 
