@@ -7,7 +7,6 @@
     ["SNAPPED", "Option D • Snapped"],
     ["LEAN_2_RUNG", "Option E • Lean 2-Rung"],
     ["OPTION_F_TREND_BREAKER", "Option F • Trend Breaker"],
-    ["OPTION_G_MT_CORE", "Option G • MT Core"],
     ["OPTION_H_MT_SPAN", "Option H • MT Span"],
     ["OPTION_I_QUARTILE_BOX", "Option I • Quartile Box (0.25–0.75)"]
   ];

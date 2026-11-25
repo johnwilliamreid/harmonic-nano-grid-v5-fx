@@ -2626,7 +2626,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ("SNAPPED", "Breaker Snapped (Mitigation Priority)", dyn_custom["SNAPPED"]["discount_rungs"], dyn_custom["SNAPPED"]["premium_rungs"]),
                 ("LEAN_2_RUNG", "Lean Mitigation Core", dyn_custom["LEAN_2_RUNG"]["discount_rungs"], dyn_custom["LEAN_2_RUNG"]["premium_rungs"]),
                 ("OPTION_F_TREND_BREAKER", "Trend Breaker (Structural Targets)", opts.get("OPTION_F_TREND_BREAKER", {}).get("discount_rungs", []), opts.get("OPTION_F_TREND_BREAKER", {}).get("premium_rungs", [])),
-                ("OPTION_G_MT_CORE", "MT-to-MT Breaker Core", opts.get("OPTION_G_MT_CORE", {}).get("discount_rungs", []), opts.get("OPTION_G_MT_CORE", {}).get("premium_rungs", [])),
                 ("OPTION_H_MT_SPAN", "MT-to-MT Full Span", opts.get("OPTION_H_MT_SPAN", {}).get("discount_rungs", []), opts.get("OPTION_H_MT_SPAN", {}).get("premium_rungs", [])),
                 ("OPTION_I_QUARTILE_BOX", "Quartile Box (0.25–0.75)", opts.get("OPTION_I_QUARTILE_BOX", {}).get("discount_rungs", [4, 5, 6, 7]), opts.get("OPTION_I_QUARTILE_BOX", {}).get("premium_rungs", [9, 10, 11, 12])),
             ]
