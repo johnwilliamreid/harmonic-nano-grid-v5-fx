@@ -486,7 +486,7 @@ def run_live_session(args):
             return price >= (market_price + buf)
         return False
 
-    def rearm_profile(opt_key: str, force: bool = False, brk_low_front=None, brk_low_back=None, brk_high_front=None, brk_high_back=None):
+    def rearm_profile(opt_key: str, force: bool = False, brk_low_front=None, brk_low_back=None, brk_high_front=None, brk_high_back=None, reset_counters: bool = False):
         nonlocal active_profile, grid_dict, grid_by_idx
 
         current_name = state.get("active_profile_name")
@@ -548,7 +548,21 @@ def run_live_session(args):
                 grid_by_idx[idx]["price"] = new_r["price"]
                 grid_by_idx[idx]["role"] = new_r["role"]
                 grid_by_idx[idx]["snap_delta"] = new_r["snap_delta"]
-                if grid_by_idx[idx]["status"] not in ("FILLED_IN_POSITION", "STOPPED_OUT"):
+                grid_by_idx[idx]["target_rung"] = new_r.get("target_rung", grid_by_idx[idx].get("target_rung"))
+                grid_by_idx[idx]["unit_risk"] = new_r.get("unit_risk", grid_by_idx[idx].get("unit_risk", 0.0))
+                grid_by_idx[idx]["exact_qty"] = new_r.get("exact_qty", grid_by_idx[idx].get("exact_qty", 0.0))
+                if reset_counters:
+                    grid_by_idx[idx]["rotations"] = 0
+                    grid_by_idx[idx]["booked_pnl"] = 0.0
+                    grid_by_idx[idx]["floating_pnl"] = 0.0
+                    grid_by_idx[idx]["fill_price"] = None
+                    grid_by_idx[idx]["fill_qty"] = 0
+                    grid_by_idx[idx]["entry_boid"] = None
+                    grid_by_idx[idx]["tp_boid"] = None
+                    grid_by_idx[idx]["sl_boid"] = None
+                    grid_by_idx[idx]["cycle_id"] = None
+                    grid_by_idx[idx]["status"] = "IDLE" if new_r["cap"] > 0 else "EXIT_ONLY"
+                elif grid_by_idx[idx]["status"] not in ("FILLED_IN_POSITION", "STOPPED_OUT"):
                     grid_by_idx[idx]["status"] = "IDLE" if new_r["cap"] > 0 else "EXIT_ONLY"
 
         state["status"] = "ACTIVE_QUOTING"
@@ -666,13 +680,17 @@ def run_live_session(args):
                     r["entry_boid"] = None
                     r["status"] = "STANDBY"
 
+            if geom_changed:
+                state["realized_pnl"] = 0.0
+                state["unrealized_pnl"] = 0.0
             rearm_profile(
                 mode,
                 force=True,
                 brk_low_front=b_lf,
                 brk_low_back=b_lb,
                 brk_high_front=b_hf,
-                brk_high_back=b_hb
+                brk_high_back=b_hb,
+                reset_counters=geom_changed
             )
 
             rot_overrides = data.get("rotation_overrides") or {}
