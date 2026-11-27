@@ -517,12 +517,7 @@ def run_live_session(args):
         state["active_profile_name"] = opt["name"]
 
         print(f"\n🔄 [TELEGRAM RE-ARM] Swapping grid to: {opt['name']}")
-        if broker:
-            for idx, r in grid_by_idx.items():
-                if r.get("entry_boid") and r["status"] == "WORKING" and abs(live_px - r["price"]) > (geom.s_step * 1.5):
-                    broker.cancel_order(r["entry_boid"])
-                    r["entry_boid"] = None
-                    r["status"] = "IDLE"
+        # FX mode: keep resting MT & inner orders working without proximity retraction
 
         new_grid = geom.generate_grid(
             active_discount_rungs=opt["discount_rungs"],
@@ -1378,10 +1373,29 @@ def run_live_session(args):
                                 print(f"🛑 [STOPPED OUT] L{idx} hit catastrophic stop at {fill_px:.2f}!")
 
                                 state["status"] = "INVALIDATED_STOPPED"
+                                active_brackets.clear()
+                                if fleet_dispatcher:
+                                    try:
+                                        fleet_dispatcher.cancel_all_fleet()
+                                    except Exception as _ce:
+                                        print(f"[Dispatcher] ⚠️ Stop invalidation cancel_all error: {_ce}")
+                                    try:
+                                        fleet_dispatcher.flatten_all_fleet()
+                                    except Exception as _fe:
+                                        print(f"[Dispatcher] ⚠️ Stop invalidation flatten_all error: {_fe}")
+                                elif broker:
+                                    try:
+                                        broker.cancel_all()
+                                    except Exception:
+                                        pass
+                                    curr_pos = getattr(broker, "net_position", 0) or state.get("position", 0)
+                                    if curr_pos != 0:
+                                        broker.place_market_order("SELL" if curr_pos > 0 else "BUY", abs(curr_pos))
                                 for other_idx, other_r in grid_by_idx.items():
-                                    if other_r["status"] in ("WORKING", "IDLE", "AWAITING_RETRACEMENT"):
-                                        if other_r.get("entry_boid") and broker:
-                                            broker.cancel_order(other_r["entry_boid"])
+                                    if other_r["status"] in ("WORKING", "IDLE", "AWAITING_RETRACEMENT", "FILLED_IN_POSITION"):
+                                        other_r["entry_boid"] = None
+                                        other_r["tp_boid"] = None
+                                        other_r["sl_boid"] = None
                                         other_r["status"] = "INVALIDATED"
 
                                 rem_summary = get_live_remaining_risk_summary(grid_by_idx)
